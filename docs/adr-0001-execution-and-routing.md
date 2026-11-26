@@ -1,29 +1,29 @@
-# ADR 0001 · Elección y ejecución por fase
+# ADR 0001 · Phase-based agent selection and execution
 
-- Estado: Propuesto. El incremento autorizado se encuentra en validación local.
-- Fecha: 2026-11-26
+- Proposed. The authorized increment is undergoing local validation.
+- November 26, 2026
 
-## Contexto
+## Context
 
-Symphony selecciona trabajo y controla el ciclo de vida en un orquestador OTP. El ejecutor original abre una sesión de Codex App Server. El fork necesita lanzar Claude Code y Antigravity directamente, con Codex como opción predeterminada y un clasificador solo en las fases con alcance incierto.
+Symphony selects work and controls its lifecycle through an OTP orchestrator. The original runner opens a Codex App Server session. The fork needs to launch Claude Code and Antigravity directly, with Codex as the default and an optional classifier for phases with ambiguous scope.
 
-## Decisión
+## Decision
 
-Mantener el orquestador y sus contratos de claims, reintentos, reconciliación y workspace. Añadir una política optativa que asocia un estado activo a un proveedor. En los estados designados, una señal de alcance ambiguo autoriza un turno breve de clasificación en un directorio temporal. El resultado se reduce a una categoría admitida y el selector decide el proveedor para el intento.
+Keep the orchestrator and its claim, retry, reconciliation, and workspace contracts. Add an opt-in policy that maps an active state to a provider. In designated states, a scope ambiguity signal allows a brief classification turn in a temporary directory. The result maps to a supported category, and the selector chooses the provider for the attempt.
 
-Mantener la sesión App Server para Codex. Para Claude Code y Antigravity, lanzar un proceso local en la carpeta del ticket y leer el resultado estructurado del CLI. Cada intento tiene un proveedor fijo. Una transición a una fase distinta vuelve a pasar por el punto de despacho y conserva los archivos del ticket. Las opciones avanzadas de sesión, permisos, uso y cancelación de cada proveedor se incorporarán donde exista evidencia de necesidad.
+Keep the App Server session for Codex. For Claude Code and Antigravity, start a local process in the ticket directory and read the CLI's structured result. Each attempt has one provider. A transition to a different phase returns to the dispatch boundary and preserves the ticket files. Add advanced session, permission, usage, and cancellation features as specific provider needs emerge.
 
-## Alternativas
+## Alternatives
 
-- **Hacer que todas las consultas pasen por un agente principal.** Reutiliza su integración, pero convierte el criterio de asignación en consumo extra y acopla todos los proveedores a un único agente.
-- **Hacer que cada proveedor imite App Server.** Minimiza la llamada desde Elixir a costa de traducir permisos, sesiones y eventos que tienen semánticas distintas.
-- **Adoptar el motor de otro fork.** Da acceso temprano a más integraciones. Reemplaza la base operativa y aumenta el trabajo de sincronizar con upstream.
-- **Introducir ACP o los SDKs desde el primer día.** Es útil si se necesitan callbacks y reanudación. Los CLIs documentados permiten probar primero el reparto con menos dependencias y un alcance local explícito.
+- **Route all decisions through a primary agent.** This reuses its integration but consumes an extra model call for selection and couples every provider to one agent.
+- **Make each provider emulate App Server.** This keeps the Elixir call site small at the cost of translating permissions, sessions, and events with different semantics.
+- **Adopt another fork's engine.** This offers more integrations early, replaces the operational baseline, and makes upstream synchronization harder.
+- **Introduce ACP or the SDKs from day one.** These are useful when callbacks or resumption matter. The documented CLIs allow an earlier routing test with fewer dependencies and an explicit local scope.
 
-## Consecuencias y verificación
+## Consequences and verification
 
-La configuración anterior conserva Codex. El primer incremento requiere CLIs autenticados, permisos acotados y acceso propio de Claude y Antigravity a Linear cuando deban actualizarlo. La clasificación es heurística y puede requerir ajuste por proyecto. El alcance de proceso local se valida con pruebas de salida estructurada, timeout y reaprovechamiento de workspace. La autenticación real y la prueba con servicios externos se verifican en el piloto.
+Existing workflows continue to use Codex. The first increment requires authenticated CLIs, scoped permissions, and separate Linear access for Claude and Antigravity if they need to update the ticket. Classification is heuristic and may need project-specific tuning. Local tests cover structured output, timeouts, and workspace reuse. The pilot must verify real authentication and external service access.
 
-Con entradas sintéticas se ejecutaron los binarios locales de Codex y Claude. El clasificador y Claude devolvieron la salida esperada. Codex App Server 0.170.0 completó un turno con una política explícita `on-request`. La política `reject` del valor predeterminado de upstream fue rechazada por esa versión. Por compatibilidad se declara la política en la configuración del piloto. Antigravity, Linear y Jira quedan por comprobar en el piloto real.
+Synthetic inputs exercised the local Codex and Claude binaries. Both the classifier and Claude returned the expected output. Codex App Server 0.170.0 completed a turn with an explicit `on-request` policy and rejected the upstream default `reject` object. The pilot configuration sets the policy explicitly for compatibility. Antigravity, Linear, and Jira still require verification in the live pilot.
 
-[Diseño y roadmap](personal-symphony-design.md)
+[Design and roadmap](personal-symphony-design.md)

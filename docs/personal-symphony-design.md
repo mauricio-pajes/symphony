@@ -1,179 +1,179 @@
-# Symphony personal
+# Personal Symphony
 
-Propuesta para revisión · 26 de noviembre de 2026
+Proposed for review · November 26, 2026
 
-## Alcance y punto de partida
+## Scope and baseline
 
-Este proyecto extiende el fork de OpenAI Symphony en Elixir/OTP. Al revisar, `main` del fork y `main` de upstream apuntaban a `be10a1b`. El checkout local incluye el incremento autorizado que lee Jira desde Linear y selecciona un ejecutor por estado. Esa implementación es optativa. El diseño de cuentas, flujos adaptativos, persistencia y TUI queda sujeto a revisión antes de pasar a código.
+This project extends the Elixir/OTP fork of OpenAI Symphony. At the time of review, both the fork's `main` and upstream `main` pointed to `be10a1b`. The fork branch includes the authorized increment to read Jira through Linear and select an agent by state. That behavior is opt-in. Account management, adaptive workflows, persistence, and the TUI require design review before implementation.
 
-La primera prueba útil es un cambio acotado de Blaze que entre con un enlace de Jira, deje criterios verificables, llegue a Mauricio con la demo real y mantenga el control humano sobre publicación y merge. El mismo servicio debe admitir tickets personales o universitarios con su propio contexto y permisos.
+The first useful pilot is a small Blaze change that starts with a Jira link, produces verifiable acceptance criteria, and reaches Mauricio with a recording of the real flow. Publication and merge remain under human control. The same service must support personal and university tickets with their own context and permissions.
 
-## Qué conservar del motor
+## Existing engine components to keep
 
-| Pieza existente | Comportamiento observado | Límite o extensión |
+| Component | Observed behavior | Boundary or extension |
 | --- | --- | --- |
-| `Workflow`, `WorkflowStore` y `Config` | Leen YAML y una plantilla Liquid, validan y recargan el archivo. Una recarga inválida conserva la última configuración válida. | Añadir campos optativos y plantillas de fase en la configuración existente. |
-| Trackers y tickets normalizados | El adaptador obtiene candidatos y refresca sus estados. Linear, Jira Cloud, GitHub Issues, GitLab y Asana están incluidos. | Linear conserva la identidad del trabajo. Jira aporta requisitos y contexto a tickets de Blaze. |
-| `Orchestrator` y supervisión OTP | Evalúa filtros, prioridad, cupos, claims y estados activos. Reintenta fallos con espera creciente y reconcilia estados al consultar el tracker. El supervisor reinicia juntos el orquestador y sus workers si corresponde. | La política de elección pertenece al ejecutor. Los registros duraderos empiezan como historial operativo. |
-| `Workspace` y hooks | Preparan, reutilizan y limpian carpetas por ticket. La sesión puede correr localmente o por SSH en el camino original. | Un único escritor por ticket. El catálogo autorizado resuelve los repositorios. Un caso multi-repo usa subdirectorios del mismo workspace. |
-| `AgentRunner` y Codex App Server | Abre la sesión, envía turnos y consulta el estado entre turnos. El protocolo JSON-RPC entrega eventos, herramientas y bloqueos. | Los adaptadores de Claude y Antigravity viven en el límite de ejecución. La sesión de Codex conserva su protocolo. |
-| CLI, dashboard de terminal, Phoenix LiveView y API | La CLI inicia el servicio. Los dashboards presentan el snapshot. La API expone estado, detalle de ticket y actualización de polling. | La TUI se conecta al daemon. Los controles persistentes y un stream de eventos con cursor son trabajo futuro. |
-| Logs y consumo | Se correlacionan tickets y sesiones. El consumo de Codex distingue datos acumulados de incrementos. El estado operativo de claims, reintentos y bloqueos vive en memoria. | Registrar eventos por proveedor con sus unidades y fuentes. El reinicio necesita una reconciliación explícita antes de incorporar efectos externos duraderos. |
+| `Workflow`, `WorkflowStore`, and `Config` | Read YAML and a Liquid template, validate them, and reload the file. An invalid reload preserves the last valid configuration. | Add optional fields and phase templates in the existing configuration. |
+| Trackers and normalized issues | The adapter fetches candidates and refreshes their states. Linear, Jira Cloud, GitHub Issues, GitLab, and Asana are included. | Linear owns the work item identity. Jira supplies requirements and context for Blaze tickets. |
+| `Orchestrator` and OTP supervision | Applies filters, priority, concurrency limits, claims, and active states. Retries failures with backoff and reconciles states against the tracker. The supervisor restarts the orchestrator and workers together when necessary. | Agent selection belongs at the execution boundary. Durable records start with operational history. |
+| `Workspace` and hooks | Prepare, reuse, and clean up per-ticket directories. The original execution path can run locally or over SSH. | Allow one writer per ticket. Resolve repositories from the authorized catalog. A cross-repository ticket uses subdirectories of the same workspace. |
+| `AgentRunner` and Codex App Server | Open the session, submit turns, and check the ticket state between turns. JSON-RPC carries events, tools, and blockers. | Claude and Antigravity adapters live at the execution boundary. Codex retains its native protocol. |
+| CLI, terminal dashboard, Phoenix LiveView, and API | The CLI starts the service. The dashboards show a snapshot. The API exposes service state, ticket details, and a polling refresh. | The TUI connects to the daemon. Persistent controls and an event stream with a cursor are future work. |
+| Logs and usage | Logs correlate tickets and sessions. Codex usage distinguishes cumulative totals from increments. Claims, retries, and blockers live in memory. | Record each provider's events with their units and sources. Restart recovery needs explicit reconciliation before adding durable side effects. |
 
-El YAML del ejemplo consulta Linear cada cinco segundos. Un ticket elegible pasa al agente cuando hay cupo. Con la configuración original, los cambios de estado que hace el agente determinan qué continúa y qué queda esperando. [Upstream y su especificación](https://github.com/openai/symphony) · [App Server](https://developers.openai.com/codex/app-server) · [Contabilidad de uso en el fork](../elixir/docs/token_accounting.md)
+The example YAML polls Linear every five seconds. An eligible ticket goes to an agent when a slot opens. In the original workflow, the state changes made by the agent determine which work continues and which work waits. [Upstream and specification](https://github.com/openai/symphony) · [App Server](https://developers.openai.com/codex/app-server) · [Usage accounting in the fork](../elixir/docs/token_accounting.md)
 
-## Tu flujo por proyecto
+## Workflow by project
 
-| Paso | Blaze | Personal y universidad |
+| Step | Blaze | Personal and university |
 | --- | --- | --- |
-| Entrada | Creas un `Todo` personal con el enlace a Jira. Si el enlace no resuelve a un proyecto y repositorios autorizados, se registra el bloqueo. | El ticket de Linear trae el encargo o referencia a la fuente del proyecto. Se cargan solo las instrucciones y el corpus del curso correspondiente. |
-| Investigación | Jira da requisitos y aclaraciones. Cuando sean relevantes y estén autorizados, el agente consulta Slack, Notion o diagnóstico de entorno. Lee los contratos entre repositorios y las instrucciones del proyecto antes de planear. | Se usa el repositorio, la documentación y las fuentes autorizadas del proyecto. |
-| Plan | Un workpad privado en Linear reúne alcance, criterios, pasos y pruebas. Cada criterio queda abierto hasta que su evidencia esté registrada. Se distinguen contradicciones de requisitos y decisiones pendientes. | El mismo formato puede reducirse a criterios y validación para cambios pequeños. |
-| Implementación y revisión | Se reutilizan las rutas normales y las pruebas del repo. La revisión parte del diff, el contrato y las consecuencias para consumidores. Se hace una segunda lectura independiente conforme a la skill aplicable, con revisión humana según el pipeline. | Se elige si hace falta una segunda lectura según el riesgo y la regla de ese proyecto. |
-| Demo | La UI real si evidencia el cambio. Para API-only en Payment Service y ECOM, Hoppscotch en la colección existente. Se reutiliza el request por método y ruta, incluso si cambia un campo. Se registra un solo request por endpoint nuevo con las convenciones del equipo y la autorización correspondiente. Platform y servicios sin colección en Hoppscotch usan Bruno. | Superficie real del proyecto y evidencia que responda al criterio, con el formato acordado por proyecto. |
-| Entrega | Video en inglés con cursor visible, envío real, estado HTTP y respuesta original cuando corresponda. Hoppscotch aporta el enlace interno verificado de colección y request. Bruno aporta el cURL sanitizado. El paquete se prepara localmente para la aprobación de Mauricio antes de publicar, pedir revisión o mover al estado corporativo de revisión. El merge sigue su aprobación específica. | Los estados de aprobación, publicación y merge los define el proyecto. |
+| Intake | Create a personal `Todo` ticket with the Jira link. Record a blocker if the link cannot be resolved to an authorized Jira project and set of repositories. | The Linear ticket contains the request or references the project's source. Load only the instructions and materials for the relevant course. |
+| Research | Jira supplies requirements and clarifications. Where relevant and authorized, consult Slack, Notion, or environment diagnostics. Read cross-repository contracts and project instructions before planning. | Use the repository, documentation, and authorized sources for the project. |
+| Plan | A private Linear workpad tracks scope, acceptance criteria, steps, and tests. Leave each criterion open until its evidence is recorded. Identify conflicting requirements and decisions that still need an owner. | For small changes, the same format can be limited to acceptance criteria and validation. |
+| Implementation and review | Reuse the repository's normal entry points and tests. Start the review from the diff, the contract, and its effect on consumers. Follow the applicable skill for an independent second pass and the project pipeline for human review. | Determine whether an independent pass is needed based on the risk and the project's rules. |
+| Demo | Use the real UI when it demonstrates the change. For API-only changes in Payment Service and ECOM, use the existing Hoppscotch collection. Reuse the request by method and route, including when an existing field changes. Register one request per new endpoint using team conventions and the appropriate authorization. Use Bruno for Platform and services without a Hoppscotch collection. | Use the actual product surface and evidence that addresses the criterion, in the format agreed for the project. |
+| Delivery | Record in English with the cursor visible. For API demos, show the actual send, HTTP status, and original response where relevant. Hoppscotch supplies the verified internal collection and request links. Bruno supplies sanitized cURL. Prepare the package locally for Mauricio's approval before publishing, requesting review, or moving the corporate ticket to its review state. Merge has its own approval. | The project defines the approval, publication, and merge states. |
 
-### Cómo aplicar las preferencias de Tiago
+### Applying Tiago's review guidance
 
-El agente de revisión carga primero las reglas vigentes del repositorio. Busca observaciones de Tiago relacionadas con el componente o el tipo de cambio, fecha y decisión vigente. Traducir una observación en una comprobación concreta es parte de la revisión. Una decisión de otro ticket conserva su alcance y una preferencia histórica pierde prioridad si el dueño corrigió el contrato.
+The reviewer first loads the current repository rules. It looks for Tiago's feedback that applies to the component or kind of change, including its date and the decision currently in effect. The review turns relevant feedback into specific checks. Decisions from another ticket retain their scope, and historical guidance yields when the owner has corrected the contract.
 
-La salida vincula cada criterio con código y prueba, comprueba el flujo real que usa el consumidor, y señala una regresión verificable con disparador, impacto y corrección acotada. Se da prioridad al cambio mínimo suficiente, reutilizar el flujo y el dato autoritativo, mantener la selección de proveedores y el mapeo en sus capas y evitar decisiones de concurrencia o persistencia sin una necesidad demostrada. La revisión del agente es evidencia técnica. El visto bueno humano se registra por separado.
+The review maps each criterion to code and a test, checks the entry point that the consumer actually uses, and describes each verified regression with its trigger, impact, and a focused correction. Favor the smallest sufficient change, reuse the existing flow and authoritative data, keep provider selection and mapping in their owning layers, and add concurrency or persistence only when the change demonstrably needs it. Agent review provides technical evidence. Human approval is recorded separately.
 
-En Blaze se aplican las skills locales `blaze-engineering` y `blaze-reviewer`, la referencia `tiago-principles.md` y el pipeline nativo. Cuando Codex es responsable, comparte con Claude el contexto mínimo de cada fase activa y verifica lo que recibe. Symphony puede programar directamente esa segunda lectura y conservar el registro local de la consulta. Una fase liderada por Claude evita consultarse a sí misma. Los comentarios de Jira, ADRs y PRs de Blaze presentan decisiones, resultados y aprobaciones sin adjuntar el historial privado de agentes.
+For Blaze, use the local `blaze-engineering` and `blaze-reviewer` skills, the `tiago-principles.md` reference, and the repository's own pipeline. When Codex owns a phase, it shares the minimum relevant context with Claude and verifies the feedback. Symphony can schedule that second pass directly and keep a local record of the consultation. For Claude-led phases, any consultation uses a separate reviewer. Blaze Jira comments, ADRs, and PRs present decisions, results, and approvals without attaching private agent history.
 
-## Alternativas revisadas
+## Alternatives reviewed
 
-| Alternativa | Qué aprovecho | Límite para este proyecto |
+| Alternative | Useful ideas | Limits for this project |
 | --- | --- | --- |
-| Upstream Elixir | Código de supervisión, cola, reconciliación, cancelación, workspace y contratos de observabilidad. | El ejecutor original arranca Codex. |
-| `oh-my-symphony` | La fuente de backends muestra adaptadores dueños de sus procesos, eventos normalizados y sesiones de distinta duración. Sus reglas por estado y gates verificables son referencias concretas. | Está escrito en Python y su registro SQLite y su interfaz son parte de otra arquitectura. |
-| `symphony-agnostic` | Demuestra selección por etiquetas y wrappers que adaptan otros agentes. | Ejecuta un poller por agente. Una decisión central en el fork conserva la autoridad de claims y simplifica el relevo. |
-| Agent Client Protocol | Ofrece un contrato publicado de sesión, herramientas, permisos y cancelación para clientes y agentes compatibles. | Evaluarlo si una integración concreta lo necesita. La compatibilidad y las funciones disponibles dependen del proveedor y de la versión. |
+| Upstream Elixir | Supervision, queueing, reconciliation, cancellation, workspace management, and observability contracts. | The original runner launches Codex. |
+| `oh-my-symphony` | The backend source shows adapters that own their processes, normalize events, and support sessions of different lengths. State-based routing and verifiable gates are concrete references. | It is written in Python. Its SQLite registry and interface belong to a different architecture. |
+| `symphony-agnostic` | Shows label-based selection and wrappers for additional agents. | Runs a poller for each agent. A central decision in this fork preserves claim ownership and simplifies handoff. |
+| Agent Client Protocol | Publishes a contract for sessions, tools, permissions, and cancellation for compatible clients and agents. | Evaluate it when a specific integration calls for it. Compatibility and available features vary by provider and version. |
 
-[Backends de oh-my-symphony](https://github.com/cskwork/oh-my-symphony/blob/main/src/symphony/backends/__init__.py) · [Configuración de oh-my-symphony](https://github.com/cskwork/oh-my-symphony/blob/main/docs/reference.md) · [symphony-agnostic](https://github.com/seyoon-han/symphony-agnostic) · [ACP v1](https://agentclientprotocol.com/protocol/v1/overview)
+[oh-my-symphony backends](https://github.com/cskwork/oh-my-symphony/blob/main/src/symphony/backends/__init__.py) · [oh-my-symphony configuration](https://github.com/cskwork/oh-my-symphony/blob/main/docs/reference.md) · [symphony-agnostic](https://github.com/seyoon-han/symphony-agnostic) · [ACP v1](https://agentclientprotocol.com/protocol/v1/overview)
 
-## Ejecución y arquitectura propuesta
+## Proposed execution architecture
 
 ```mermaid
 flowchart LR
-  L[Linear personal] --> O[Orquestador OTP existente]
+  L[Personal Linear queue] --> O[Existing OTP orchestrator]
   O --> R[AgentRunner]
-  J[Jira autorizado] --> I[Lectura de requisitos]
+  J[Authorized Jira] --> I[Requirement intake]
   I --> R
-  R --> A[Reglas por fase]
-  A -->|alcance ambiguo| C[Clasificación breve con Codex]
+  R --> A[Phase-based rules]
+  A -->|ambiguous scope| C[Brief Codex classification]
   C --> A
-  A --> P[Ejecutor del proveedor]
-  P --> W[Workspace y workpad del ticket]
+  A --> P[Provider runner]
+  P --> W[Ticket workspace and workpad]
   P --> O
-  O --> S[Snapshot y eventos]
-  S --> T[CLI o TUI independiente]
-  W --> H[Aprobación humana]
+  O --> S[Snapshot and events]
+  S --> T[Independent CLI or TUI]
+  W --> H[Human approval]
 ```
 
-### Capacidades de ejecución
+### Execution capabilities
 
-| Proveedor | Integración inicial | Capacidades y límites que importan |
+| Provider | Initial integration | Relevant capabilities and limits |
 | --- | --- | --- |
-| Codex | App Server original para trabajo y CLI en solo lectura para clasificación | Sesión y turnos, aprobaciones y herramientas dinámicas, cancelación y señales de uso. El fork preserva ese camino. |
-| Claude Code | CLI en modo no interactivo con eventos JSON | La CLI y el Agent SDK tienen salida estructurada. El SDK ofrece control programático de permisos y sesiones, justificable si el piloto exige callbacks o reanudación. El primer incremento consume el resultado de la ejecución y emite progreso. |
-| Antigravity con Gemini | CLI `agy` con streaming JSON | Documenta sesiones, mensajes estructurados, modelos y uso. Se debe verificar el permiso real del worker, el acceso al modelo y qué eventos expone la versión instalada en la prueba piloto. |
+| Codex | Original App Server for execution and a read-only CLI for classification | Sessions and turns, approvals and dynamic tools, cancellation, and usage signals. The fork preserves this path. |
+| Claude Code | Non-interactive CLI with JSON events | Both the CLI and Agent SDK offer structured output. The SDK adds programmatic control for permissions and sessions, which could be useful if the pilot needs callbacks or resumption. The initial increment reads the result and emits progress. |
+| Antigravity with Gemini | `agy` CLI with JSON streaming | Documents sessions, structured messages, models, and usage. The pilot must verify worker permissions, model access, and events from the installed version. |
 
-La preferencia inicial de Sol para ejecución rutinaria combina su integración existente y la mayor cuota de Mauricio. Astra queda para diagnósticos o cambios amplios dentro de Codex. Claude sirve para una revisión independiente y Gemini Neon para documentación extensa o evidencia multimedia. Terminal-Bench 4.1 mide tareas de terminal, con configuraciones y herramientas distintas. Su cercanía entre Sol y Neon sustenta que la selección dependa del tipo de trabajo y de las métricas locales. La evaluación de Google sobre video y contexto largo es una hipótesis para el piloto. [Claude Code headless](https://code.claude.com/docs/en/headless) · [Antigravity headless](https://antigravity.google/docs/cli/headless/) · [Modelos de Antigravity](https://antigravity.google/docs/models) · [Terminal-Bench 4.1](https://www.tbench.ai/?open_in_browser=true) · [Evaluación de Neon](https://storage.googleapis.com/deepmind-media/gemini/gemini_4_neon_model_evaluation.pdf)
+The initial preference for Sol on routine work reflects the existing integration and Mauricio's greater Codex quota. Astra is available for diagnostics and larger changes within Codex. Claude offers independent review, and Gemini Neon is a candidate for long documentation or multimedia evidence. Terminal-Bench 4.1 measures terminal tasks under different settings and tools. The close scores for Sol and Neon support using task type and local metrics for selection. Google's results for video and long context provide a hypothesis for the pilot. [Claude Code headless](https://code.claude.com/docs/en/headless) · [Antigravity headless](https://antigravity.google/docs/cli/headless/) · [Antigravity models](https://antigravity.google/docs/models) · [Terminal-Bench 4.1](https://www.tbench.ai/?open_in_browser=true) · [Neon evaluation](https://storage.googleapis.com/deepmind-media/gemini/gemini_4_neon_model_evaluation.pdf)
 
-Cuando otro ejecutor necesite más capacidades, el contrato podrá distinguir sesión persistente, streaming, reanudación, adjuntos, herramientas del tracker, permisos, cancelación y forma de medir consumo. El evento común debería llevar ticket, fase, intento, proveedor, modelo y perfil local, secuencia, tiempo y tipo. El cuerpo autorizado se limita a progreso, uso del proveedor, bloqueo o desenlace. Los campos propios de cada proveedor se conservan en un detalle privado y filtrado. Los dashboards deben seguir consumiendo el snapshot compatible durante la transición.
+When another runner needs additional capabilities, its contract can distinguish persistent sessions, streaming, resumption, attachments, tracker tools, permissions, cancellation, and usage accounting. A common event should carry the ticket, phase, attempt, provider, model, local profile, sequence, timestamp, and type. The permitted payload covers progress, provider usage, blockers, or outcomes. Provider-specific fields remain in a private, filtered detail record. Dashboards should continue to consume the compatible snapshot during the transition.
 
-### Asignación y ejecución por fase
+### Phase routing and execution
 
-1. El estado y el proyecto definen la fase. El router comprueba repositorio, acceso a datos, herramientas y capacidad de ejecución. Un override explícito del operador respeta los mismos límites.
-2. En una fase configurada para clasificar, la falta de criterios explícitos o una indicación de alcance incierto permite una consulta breve. La respuesta del modelo produce una categoría validada. Los criterios que falten siguen pendientes de aclaración. La política decide qué candidatos autorizados pueden ejecutar esa categoría. El incremento actual usa el mecanismo de reintento ante un fallo del clasificador. El piloto debe comprobar un límite para esos reintentos y una forma explícita de dejar el alcance pendiente.
-3. Para un cambio pequeño, implementación, pruebas y evidencia pueden permanecer en una sesión. Si el ticket tiene varios componentes, una migración o un contrato delicado, se justifica planificación, revisión independiente y una comprobación específica antes del paso humano. Un aumento de alcance pide replanificación a partir del diff y la última evidencia.
-4. Cuando el tracker cambia de fase, el ejecutor termina su intento y el siguiente reutiliza el workspace. Dos lectores pueden investigar instantáneas si el riesgo y la cuota lo justifican. Cada checkout de implementación conserva un único escritor. Las fases paralelas y los grafos de dependencias se justifican con un caso piloto concreto.
-5. La decisión explica por qué eligió a ese agente y qué alternativas eran elegibles. La primera política usa reglas. Más adelante, disponibilidad y resultados históricos pueden desempatar perfiles autorizados. Mantener revisión y corrección dentro de un presupuesto de intentos, con un bloqueo explícito al agotarlo.
+1. The state and project define the phase. The router checks the repository, data access, tools, and available execution capacity. An explicit operator override follows the same limits.
+2. In phases configured for classification, missing explicit criteria or an ambiguity signal allows a brief model call. The response becomes a validated category. Missing criteria remain open for clarification. The policy determines which authorized candidates can handle the category. The current increment uses the existing retry behavior if classification fails. The pilot should verify a cap for those retries and an explicit way to leave the scope unresolved.
+3. For a small change, one session can cover implementation, tests, and evidence. Multiple components, a migration, or a sensitive contract can justify planning, independent review, and a targeted check before human review. An increase in scope calls for revisiting the plan using the diff and the latest evidence.
+4. When the tracker moves to another phase, the current runner finishes its attempt and the next runner reuses the workspace. Two readers can investigate snapshots if the risk and quota justify it. Each implementation checkout retains a single writer. Parallel phases and dependency graphs need a concrete pilot scenario.
+5. Each routing decision records why the agent was selected and which alternatives were eligible. The initial policy is rule-based. Later, availability and historical results can break ties among authorized profiles. Review and correction stay within an attempt budget, with an explicit blocker when it runs out.
 
-### Cuentas, uso y credenciales
+### Accounts, usage, and credentials
 
-La propuesta de registro distingue identidad local del perfil, proveedor, método de autenticación, estado, modelos autorizados, organización y repositorios permitidos, capacidades, concurrencia y última observación. La observación de cuota incluye tipo de ventana, reinicio, unidad y fuente. Sus estados son medido, estimado y desconocido. Desconocido se presenta como tal. Se registran límites y gasto sin guardar tokens en la base, en prompts o en evidencia.
+The proposed account registry distinguishes the local profile identity, provider, authentication method, status, authorized models, permitted organization and repositories, capabilities, concurrency, and last observation. Quota observations include window type, reset time, unit, and source. Their status is measured, estimated, or unknown. Show unknown values as such. Record limits and spend without storing credentials in the database, prompts, or evidence.
 
-Cada worker arranca con la identidad autorizada para su proyecto. Las implementaciones futuras deben demostrar cómo se aísla cada perfil con el mecanismo soportado por ese proveedor antes de incorporarlo al registro. Para la cuenta institucional, la lista de repositorios autorizados empieza vacía hasta que se confirme el alcance. Ante límite, se espera el reinicio, se usa capacidad adicional autorizada o se considera otro proveedor habilitado para el mismo trabajo. Un error de autenticación o permisos se presenta como bloqueo. Las suscripciones y el consumo por API se registran con sus propias unidades y condiciones. [OpenAI autenticación y uso](https://learn.chatgpt.com/docs/auth) · [Claude Code costes y créditos](https://code.claude.com/docs/en/costs) · [Antigravity autenticación](https://antigravity.google/docs/install) · [Términos de OpenAI](https://openai.com/policies/terms-of-use/)
+Each worker starts with the identity authorized for its project. Future implementations must verify how the provider supports profile isolation before adding that provider's profiles to the registry. The institutional account starts with an empty repository allowlist until its scope is confirmed. When a quota runs out, wait for the reset, use approved additional capacity, or consider another provider authorized for the same work. Authentication and authorization errors are surfaced as blockers. Track subscriptions and API usage using their respective units and terms. [OpenAI authentication and usage](https://learn.chatgpt.com/docs/auth) · [Claude Code costs and credits](https://code.claude.com/docs/en/costs) · [Antigravity authentication](https://antigravity.google/docs/install) · [OpenAI Terms of Use](https://openai.com/policies/terms-of-use/)
 
-### Relevo, persistencia y seguridad
+### Handoff, persistence, and security
 
-El relevo usa un registro breve con fuente y revisión del requerimiento, criterios pendientes, repo y ref, resumen del diff, pruebas ejecutadas y sus salidas útiles, hallazgos abiertos, evidencia y próxima acción. El workspace conserva archivos y el workpad conserva el estado que se puede compartir. Las sesiones persistentes sirven dentro de un proveedor. Entre proveedores se comparte ese registro y los artefactos necesarios.
+A handoff is a short record with the source and revision of the requirements, open criteria, repository and ref, diff summary, test commands and useful output, open findings, evidence, and next action. The workspace preserves files and the workpad preserves shareable state. Persistent sessions help within one provider. Across providers, share the handoff and the artifacts needed for the next phase.
 
-La primera lectura de Jira guardará una referencia de la revisión usada en el plan, por ejemplo su fecha de actualización y un hash de los requisitos pertinentes. Si difiere en una fase posterior, el paquete debe señalar qué criterios requieren reevaluación. La lectura actual aporta la última versión visible en cada intento. El registro de revisión del requisito forma parte del contrato de relevo pendiente.
+The first Jira read will record the revision used for planning, such as its update time and a hash of the relevant requirements. If the revision changes in a later phase, the handoff must identify the criteria that need another look. The current implementation reads the latest visible version on each attempt. Recording the requirement revision is part of the pending handoff contract.
 
-Conservar la cola y reconciliación de OTP para el primer piloto. Guardar después un historial acotado de intentos y decisiones, con permisos por proyecto, antes de persistir leases. SQLite local con WAL es una opción cuando la recuperación del historial o las medidas repetibles lo necesiten. Su escritura vive en un solo host y las pruebas deben cubrir caída inmediatamente antes y después de publicar un efecto. Un checkpoint de borrador y una intervención humana no pueden reverificarse solo a partir de un código de salida. [SQLite WAL](https://sqlite.org/wal.html)
+Keep the OTP queue and reconciliation for the first pilot. Add a bounded history of attempts and routing decisions with project-level permissions before persisting leases. Local SQLite with WAL is an option when recovering history or collecting repeatable measurements calls for it. Writes stay on one host, and tests must cover crashes just before and after publishing a side effect. A process exit code alone cannot establish that a draft checkpoint or human approval is still valid. [SQLite WAL](https://sqlite.org/wal.html)
 
-El URL de Jira identifica un ticket del origen configurado. El motor construye la llamada HTTPS, suprime redirecciones en la entrada y quita los secretos del tracker y del lector de Jira declarados en el entorno del agente. Los CLIs usan su propia autenticación autorizada. Cualquier texto de un ticket o comentario se trata como material de trabajo. La autorización de repositorios, operaciones y destino se fija fuera del ticket. Para Blaze, la señal que autoriza publicar o hacer merge debe provenir de una identidad humana verificada para el ticket y la versión de la evidencia. El agente puede registrar progreso, pero una transición hecha por su identidad solo cambia la cola. El daemon mantendrá la API en loopback por defecto, y los futuros controles requieren autorización y claves de idempotencia. La recuperación debe probar una única ejecución activa por ticket y evitar dobles PRs, escrituras repetidas y pérdida de evidencia. [API de Jira Cloud](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/)
+A Jira URL identifies an issue on the configured origin. The engine constructs the HTTPS request, disables redirects for intake, and removes the declared tracker and Jira reader secrets from the agent environment. The CLIs use their own authorized authentication. Treat ticket and comment text as work material. Repository, operation, and destination permissions are set outside the ticket. For Blaze, publication or merge must be authorized by a verified human identity for the ticket and the matching evidence revision. The agent can record progress, and a transition made with its identity only changes the queue. The daemon will keep the API on loopback by default. Future control operations require authorization and idempotency keys. Recovery must prove that only one run is active per ticket and prevent duplicate PRs, repeated writes, and loss of evidence. [Jira Cloud API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/)
 
-## Observabilidad y evaluación
+## Observability and evaluation
 
-Registrar por intento proveedor, modelo, fase, clase de trabajo, tamaño aproximado, riesgo, razón de la ruta, duración, desenlace, recompilaciones y retrabajo. Las métricas de revisión cuentan defectos confirmados por el responsable, con evidencia, y cuánto trabajo añadieron o evitaron. Las señales de uso preservan su unidad, ventana y calidad. El historial omite secretos, cuerpos de tickets externos y transcripciones privadas.
+Record the provider, model, phase, task category, approximate size, risk, routing reason, duration, outcome, rebuilds, and rework for each attempt. Review metrics track findings confirmed by the owner, the evidence that supports them, and the work they added or prevented. Usage observations retain their unit, window, and quality. History excludes secrets, external ticket bodies, and private transcripts.
 
-Primero levantar una línea base con Codex en tickets comparables. En una segunda muestra elegir pares con criterios y riesgo parecidos, o repetir tareas cerradas sobre copias aisladas del mismo commit. Revisar los entregables sin mostrar el proveedor cuando sea viable. Comparar aceptación al primer intento, tiempo desde `Todo` hasta revisión, minutos humanos, defectos confirmados, retrabajo y cuota por proveedor. Registrar curación de tests, aprobaciones y casos excluidos. Examinar medianas y dispersión antes de sacar reglas de muestras pequeñas, y cambios por dificultad antes de interpretar una tasa de éxito agregada.
+First collect a Codex baseline on comparable tickets. Then select pairs with similar acceptance criteria and risk, or replay closed tasks in isolated copies of the same commit. When feasible, review the outputs without identifying the provider. Compare first-pass acceptance, time from `Todo` to review, human time, confirmed defects, rework, and quota use by provider. Record test selection, approvals, and excluded cases. Examine medians and variability before drawing rules from small samples. Compare by difficulty before interpreting an aggregate success rate.
 
-## CLI y TUI
+## CLI and TUI
 
-El primer cliente reutiliza `/api/v1/state` y detalle de ticket. El prototipo será de solo lectura y sin dependencia de un daemon nuevo. Para reconectar, toma snapshot y recupera eventos desde un cursor cuando esté disponible. Ante un hueco, renueva el snapshot. El daemon conserva la ejecución cuando el cliente se cierra. Los futuros comandos con efecto usan las mismas operaciones autorizadas que la interfaz de terminal. Orden propuesto de comandos tras el piloto: `status`, `issue`, `logs`, `doctor`, luego `pause`, `resume`, `retry` y `route`.
+The first client reuses `/api/v1/state` and the ticket detail endpoint. The prototype is read-only and uses the existing daemon. On reconnect, it gets a snapshot and retrieves events from a cursor when available. If there is a gap, it refreshes the snapshot. The daemon keeps running when the client closes. Future commands with side effects use the same authorized operations as the terminal interface. After the pilot, start with `status`, `issue`, `logs`, and `doctor`, then add `pause`, `resume`, `retry`, and `route`.
 
-| Opción | Ventaja | Coste |
+| Option | Benefit | Cost |
 | --- | --- | --- |
-| Go con Bubble Tea, Lip Gloss y Bubbles | Cliente distribuible por separado, programa basado en eventos y componentes separados del motor. | Nuevo toolchain y contrato de API que versionar. |
-| Elixir con Owl | Menos lenguajes. El dashboard actual y los bloques en vivo sirven para un cliente sencillo. | Un tablero interactivo con varios paneles y navegación exige un prototipo adicional antes de elegirlo. |
-| Ratatui | Control del render y la disposición con un cliente compilado. | Introduce Rust y más decisiones de integración para este piloto. |
-| Ink | Un equipo con experiencia en React puede iterar rápido. | Añade Node y un runtime distinto para distribución local. |
+| Go with Bubble Tea, Lip Gloss, and Bubbles | Separately distributable client with an event-driven program and components independent of the engine. | An additional toolchain and an API contract to version. |
+| Elixir with Owl | One more client without adding another language. The existing dashboard and live blocks support a simple interface. | A multi-pane interactive board needs another prototype before selection. |
+| Ratatui | Direct control of rendering and layout in a compiled client. | Introduces Rust and more integration decisions during the pilot. |
+| Ink | A team familiar with React can iterate quickly. | Adds Node and a separate runtime for local distribution. |
 
-Recomiendo empezar con el dashboard existente. Si el piloto muestra que hace falta navegación de tickets y revisión desde la terminal, comparar un prototipo del detalle con Bubble Tea y uno mínimo en Elixir. Si el contrato HTTP alcanza para el cliente, Go es una opción razonable. El boceto usa la jerarquía de una herramienta operativa, teclado primero. El agente se reconoce por sigla y color secundario. El estado siempre aparece como texto. Una mascota compacta responde a eventos reales y puede desactivarse junto con el movimiento. [Bubble Tea](https://github.com/charmbracelet/bubbletea) · [Owl.LiveScreen](https://owl.hexdocs.pm/Owl.LiveScreen.html) · [Ratatui](https://github.com/ratatui/ratatui) · [Ink](https://github.com/vadimdemedes/ink)
+Start with the existing dashboard. If the pilot shows a need for ticket navigation and review from the terminal, compare a Bubble Tea ticket detail prototype with a minimal Elixir implementation. Go is a reasonable option if the HTTP contract meets the client's needs. The wireframe follows an operator console hierarchy with keyboard-first controls. An abbreviation and secondary color identify the agent. State always appears as text. An optional compact mascot responds to actual events, and motion can be disabled. [Bubble Tea](https://github.com/charmbracelet/bubbletea) · [Owl.LiveScreen](https://owl.hexdocs.pm/Owl.LiveScreen.html) · [Ratatui](https://github.com/ratatui/ratatui) · [Ink](https://github.com/vadimdemedes/ink)
 
 ```text
-Cola                                    Conectado   2 en ejecución
-Proyecto          Ticket              Fase       Estado
-Blaze             Endpoint nuevo      Demo       Espera aprobación
-Universidad       Caso de prueba      Implement. En ejecución [CX]
-Personal          Importación         Análisis    Espera cupo
+Queue                                   Connected   2 running
+Project           Ticket              Phase       State
+Blaze             New endpoint        Demo        Awaiting approval
+University        Test case           Implement   Running [CX]
+Personal          Import              Analysis    Waiting for a slot
 
-Enter Detalle     / Buscar     p Proyecto     e Eventos
-```
-
-```text
-Endpoint nuevo                          Demo     Espera aprobación
-Criterios    [x] Devuelve el campo    [x] Mantiene el contrato
-Evidencia   Demo verificada   Hoppscotch   Pruebas
-Decisión    Codex implementó. Revisión independiente por contrato.
-Eventos     Implementación terminada · Revisión · Demo lista
-
-Esc Cola     o Abrir evidencia     Tab Cambiar panel
+Enter Details    / Search    p Project    e Events
 ```
 
 ```text
-Agentes y cuentas                       Uso observado
-[CX] Codex       Activo      Principal        Ventana conocida
-[CL] Claude      Libre       Revisión         Cuota desconocida
-[GM] Gemini      Espera      Perfil personal  Reinicio pendiente
+New endpoint                            Demo      Awaiting approval
+Criteria     [x] Returns the field    [x] Preserves the contract
+Evidence    Verified demo   Hoppscotch   Tests
+Decision    Codex implemented. Independent review for contract risk.
+Events      Implementation complete · Review · Demo ready
 
-Esc Cola     / Filtrar     Enter Ver estado del perfil
+Esc Queue    o Open evidence    Tab Switch pane
 ```
 
-A 80 columnas, la vista de ticket se apila bajo el encabezado y la tabla prioriza fase y estado. A 120 columnas, el detalle puede convivir con la cola. Validar teclado, foco, ASCII, contraste y modo sin animación. Estos son wireframes de texto para discusión.
+```text
+Agents and accounts                     Observed usage
+[CX] Codex       Active    Primary           Known window
+[CL] Claude      Idle      Review            Quota unknown
+[GM] Gemini      Waiting   Personal profile  Reset pending
 
-## Roadmap y criterios
+Esc Queue    / Filter    Enter Profile details
+```
 
-| Fase | Entrega acotada | Criterio de salida y dependencias |
+At 80 columns, ticket details stack below the heading and the table prioritizes phase and state. At 120 columns, details can sit alongside the queue. Verify keyboard navigation, focus, ASCII mode, contrast, and the option to disable motion. These are text wireframes for review.
+
+## Roadmap and exit criteria
+
+| Phase | Scoped deliverable | Exit criteria and dependencies |
 | --- | --- | --- |
-| Descubrimiento | Revisar este diseño y los ADRs. Confirmar qué parte del incremento previo entra al piloto. | Mauricio elige un tablero de prueba, un repositorio y límites de publicación. |
-| Piloto del workflow | Jira de lectura, ruta por fase, evidencia y aprobación en un ticket pequeño. | Un enlace resuelve requisitos sin cambiar Jira, aparecen casillas, un estado claro omite clasificación, la fase cambia de proveedor en el mismo workspace, y se verifica una demo y su enlace o cURL. Requiere entorno y autenticación de prueba. |
-| Ejecución y relevo fiable | Contrato de eventos, checkpoint, preflight y condiciones de pausa y reanudación. | Pruebas de transición externa, cancelación, fallo de autorización, timeout, reinicio y escrituras idempotentes. Depende de resultados del piloto. |
-| Cuentas y observabilidad | Perfiles autorizados, límites observables, atribución de decisiones e historial local. | Estado desconocido distinguible, registros sin credenciales y trazas que explican la ruta. Depende de métodos oficiales de autenticación y de qué datos expone cada proveedor. |
-| Medición y adaptación | Muestra controlada, reglas evaluadas por clase de cambio y escalamiento. | Comparación reproducible contra Codex y evidencia de que cada regla mejora una métrica relevante sin empeorar el control humano. |
-| CLI y TUI | Cliente de solo lectura y luego controles autorizados. | Puede reconectar y cargar una cola sin detener el daemon. Las acciones pasan por la misma autorización y quedan auditadas. Depende de snapshot estable y contrato de eventos. |
+| Discovery | Review this design and the ADRs. Confirm which parts of the existing increment belong in the pilot. | Mauricio chooses a test board, a repository, and publication limits. |
+| Workflow pilot | Read-only Jira intake, phase routing, evidence, and approval on one small ticket. | A link resolves requirements without changing Jira, acceptance checkboxes appear, a clear scope skips classification, a new phase changes provider in the same workspace, and a demo and its link or cURL are verified. Requires a test environment and authentication. |
+| Reliable execution and handoff | Event contract, checkpoint, preflight, and pause and resume behavior. | Tests cover out-of-band transitions, cancellation, failed authorization, timeouts, restart, and idempotent writes. Depends on the pilot results. |
+| Accounts and observability | Authorized profiles, observable limits, routing attribution, and local history. | Unknown values are distinguishable, records contain no credentials, and traces explain routing. Depends on the documented authentication methods and each provider's available data. |
+| Measurement and adaptation | Controlled sample, per-category rule evaluation, and escalation. | A repeatable comparison against Codex and evidence that each rule improves a relevant metric while preserving human control. |
+| CLI and TUI | Read-only client followed by authorized controls. | The client can reconnect and load the queue without stopping the daemon. Actions share the same authorization path and are audited. Depends on a stable snapshot and event contract. |
 
-Mantener sincronizado el upstream con cambios de integración pequeños. Las extensiones viven junto a los límites existentes y usan opciones sin efecto por defecto. Verificar el camino original en cada actualización y añadir un fixture de compatibilidad si cambia App Server. Registrar una nueva decisión cuando haga falta modificar el contrato de procesos, persistencia, tracker o control. [Configuración que admite el incremento](../elixir/README.md#personal-linear-queue-with-jira-intake-and-multiple-agents) · [ADR de ejecutores](adr-0001-execution-and-routing.md) · [ADR de intake](adr-0002-linear-jira-intake.md)
+Keep the branch in sync with upstream through small integration changes. Extensions stay next to the existing boundaries and have no effect unless enabled. Verify the original execution path during each update and add a compatibility fixture when App Server changes. Record an ADR when a change affects the process, persistence, tracker, or control contract. [Configuration supported by the increment](../elixir/README.md#personal-linear-queue-with-jira-intake-and-multiple-agents) · [Execution ADR](adr-0001-execution-and-routing.md) · [Intake ADR](adr-0002-linear-jira-intake.md)
 
-### Decisiones para el piloto
+### Decisions for the pilot
 
-- El proyecto Linear y los nombres de estados que permiten preparar, pausar y retomar trabajo. Hasta configurarlos, el YAML incluido sigue siendo el ejemplo upstream.
-- El alcance real de Jira y los repositorios asociados. Una fase multi-repo necesita un catálogo explícito y una revisión de credenciales.
-- El perfil de Antigravity autorizado para datos de Blaze. La disponibilidad en la cuenta universitaria requiere confirmación del entorno y sus reglas.
-- El alcance de las demos que requieren acceso a un cliente de escritorio, entorno autenticado y grabación. El worker local y la prueba con una colección real siguen por verificar.
-- Cómo registrar la aprobación y el paquete de evidencia sin copiar información de Blaze a una superficie personal fuera de su alcance autorizado.
+- Choose the Linear project and the states for preparing, pausing, and resuming work. The bundled YAML remains the upstream example until the pilot is configured.
+- Confirm the Jira scope and corresponding repositories. Cross-repository work needs an explicit catalog and a credentials review.
+- Identify the Antigravity profile authorized to handle Blaze data. Availability of the university account depends on its environment and rules.
+- Confirm which demos need desktop access, an authenticated environment, and recording. The local worker and a run against the real collection still need verification.
+- Decide how to record approval and the evidence package while keeping Blaze information within its authorized scope.

@@ -1,26 +1,26 @@
-# ADR 0002 · Linear personal y requisitos en Jira
+# ADR 0002 · Personal Linear queue and Jira requirements
 
-- Estado: Propuesto. El incremento autorizado se encuentra en validación local.
-- Fecha: 2026-11-26
+- Proposed. The authorized increment is undergoing local validation.
+- November 26, 2026
 
-## Contexto
+## Context
 
-Mauricio gestiona una cola personal junto a tickets de Blaze que ya tienen dueño y criterios en Jira. Un enlace de Jira debe bastar para empezar sin duplicar el ticket ni cambiar su titularidad.
+Mauricio manages a personal queue alongside Blaze tickets that already have an owner and acceptance criteria in Jira. A Jira link should be sufficient to start work while preserving the original ticket and its ownership.
 
-## Decisión
+## Decision
 
-Linear conserva el identificador y el estado de ejecución. Jira se lee desde el host con la configuración de origen y, si se declara, el proyecto permitido. Symphony construye la ruta de lectura a partir de la clave y añade a la descripción que recibe el agente el resumen, criterios, comentarios accesibles y vínculos relevantes. La fase y los permisos siguen en el workflow. Las actualizaciones corporativas o la publicación de evidencia siguen las aprobaciones de Blaze.
+Linear retains the work item identifier and execution state. The host reads Jira from the configured origin and, when set, the permitted project. Symphony builds the read endpoint from the issue key and adds the summary, criteria, visible comments, and related issue links to the description sent to the agent. The workflow continues to own phase configuration and permissions. Corporate ticket updates and publication of evidence follow Blaze approval rules.
 
-El primer incremento reconoce enlaces de un origen configurado. Si detecta más de un ticket de ese origen, registra la ambigüedad. Los tickets sin enlace compatible conservan su descripción de Linear. El catálogo define qué repositorios puede usar cada workflow y se verifica antes de abrirlos.
+The first increment recognizes links from one configured origin. If it finds more than one ticket from that origin, it reports the ambiguity. Tickets without a matching link retain their Linear description. The catalog defines which repositories a workflow can use, and the workflow checks the catalog before opening a repository.
 
-## Alternativas
+## Alternatives
 
-- **Usar Jira como tracker único.** Permite polling nativo en Blaze. Mezclaría la cola del usuario con el tablero corporativo y exigiría otro tracker para sus proyectos personales.
-- **Copiar la descripción completa a Linear.** Reduce la lectura al inicio. Introduce duplicación y obliga a reconciliar decisiones cuando Jira cambia.
-- **Resolver cualquier URL dentro de la tarea.** Permite más fuentes. El origen fijo y la ruta construida permiten acotar mejor las lecturas y el uso de credenciales.
+- **Use Jira as the only tracker.** This allows native polling in Blaze, combines the personal queue with the corporate board, and requires another tracker for personal projects.
+- **Copy the full description into Linear.** This reduces initial reads but duplicates requirements and requires reconciliation when Jira changes.
+- **Resolve any URL in the work item.** This supports more sources. A fixed origin and constructed path give tighter control over reads and credential use.
 
-## Consecuencias y verificación
+## Consequences and verification
 
-Cada intento puede consultar una versión actual del ticket. El resultado del análisis registra qué requisitos usó. Los comentarios y enlaces se tratan como datos y los secretos declarados permanecen en el host. Las pruebas comprueban el origen, el proyecto, la lectura sin redirecciones y la identidad de Linear. La aprobación corporativa y las cuentas reales se verifican en un piloto con alcance acordado.
+Each attempt can read the current ticket version. The analysis records which requirements it used. Comments and links are treated as data, and the configured credentials stay with the host. Tests verify origin, project scope, redirect handling, and preservation of the Linear identity. A pilot with an agreed scope will verify corporate approval and live accounts.
 
-[Diseño y roadmap](personal-symphony-design.md)
+[Design and roadmap](personal-symphony-design.md)
