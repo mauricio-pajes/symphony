@@ -121,6 +121,66 @@ Optional flags:
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
 Codex session prompt.
 
+The bundled workflow's [demo evidence rules](WORKFLOW.md#demo-evidence) cover recorded product and
+API changes. For Blaze API-only demos, they route Payment Service and ECOM backend to Hoppscotch
+and Platform to Bruno. Review handoff includes the verified video and either an organization-accessible
+Hoppscotch link or a sanitized cURL command from Bruno. A live demo requires access to the real
+client, target environment, and recording tools from the agent's execution host.
+
+The [personal queue intake rules](WORKFLOW.md#intake-from-a-personal-linear-queue) let a Linear ticket
+reference a Blaze Jira issue as its source of requirements. Configure the Linear scope, Jira access, and
+authorized repositories before running this workflow. The bundled front matter still targets Symphony's
+example project. For a queue scoped to one repository, set `hooks.after_create` to clone that repository.
+For Jira links that can point to several repositories, start with an empty issue workspace and provide a
+repository catalog in the prompt so the agent can select and clone the target after reading Jira. If
+the project requires approval before publication, configure its approval hold outside the active
+dispatch states.
+
+### Personal Linear queue with Jira intake and multiple agents
+
+Enable these settings in your own workflow. Use the actual state names from the Linear project.
+Keep the human approval states out of `active_states` so they pause execution.
+
+```yaml
+tracker:
+  kind: linear
+  provider:
+    project_slug: your-personal-project-slug
+  active_states: [Todo, Planning, In Progress, Agent Review]
+  terminal_states: [Done, Canceled]
+agent:
+  jira_intake:
+    base_url: $JIRA_BASE_URL
+    email: $JIRA_EMAIL
+    api_token: $JIRA_API_TOKEN
+  providers_by_state:
+    Todo: codex
+    Planning: gemini
+    In Progress: codex
+    Agent Review: claude
+  classify_scope_states: [Todo]
+```
+
+- Paste a Jira `/browse/KEY` URL in the Linear description. Symphony fetches the issue, its visible
+  comments and linked issue keys from the configured Jira site with a read-only request. It adds this
+  context to the agent prompt while keeping Linear as the tracker. You can set `jira_intake.project_key`
+  to limit intake to one Jira project. Tickets without a matching link use their Linear description.
+- A state uses its configured provider and defaults to Codex when unmapped. In `classify_scope_states`,
+  Symphony runs the read-only Codex classifier when the description lacks explicit acceptance criteria
+  or the ticket has `scope-unclear`. It may choose another configured provider for that attempt. After
+  an agent advances Linear to a different routed phase, Symphony starts a new session in the same workspace.
+- Write the completion criteria and next Linear state for each active phase in the workflow prompt.
+  Codex gets Symphony's tracker tools. Claude Code and Gemini run as local CLIs and need their own
+  authorized Linear connection if their phase updates the workpad or transitions the ticket. Have each
+  phase record its findings or changes before advancing so the next agent can resume from the workspace
+  and workpad. Set their tool permissions for the project before enabling a route.
+- Install and authenticate `claude` and `agy` on the worker. `agy` uses Gemini 4 Neon High by default.
+  Override `agent.claude_command`, `agent.gemini_command`, or `agent.classifier_command` with an argv
+  list to pin a different model or CLI installation. Use the same streaming output format when
+  overriding a command. The classifier and the extra providers currently require a local worker.
+
+### Minimal workflow example
+
 Minimal example:
 
 ```md

@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Tracker do
   """
 
   alias SymphonyElixir.Config
+  alias SymphonyElixir.Jira.Client
   alias SymphonyElixir.Tracker.Issue
 
   @adapters %{
@@ -47,16 +48,20 @@ defmodule SymphonyElixir.Tracker do
   """
   @spec bind_agent_tools() :: map()
   def bind_agent_tools do
-    tracker_settings = Config.settings!().tracker
+    settings = Config.settings!()
+    tracker_settings = settings.tracker
     adapter = adapter_for_settings!(tracker_settings)
 
     %{
       adapter: adapter,
       tracker_settings: tracker_settings,
       tool_specs: adapter_agent_tool_specs(adapter),
-      secret_environment_names: adapter_secret_environment_names(adapter, tracker_settings)
+      secret_environment_names: Enum.uniq(adapter_secret_environment_names(adapter, tracker_settings) ++ jira_intake_secret_names(settings.agent.jira_intake))
     }
   end
+
+  defp jira_intake_secret_names(nil), do: []
+  defp jira_intake_secret_names(provider), do: Client.intake_secret_environment_names(provider)
 
   @spec execute_bound_agent_tool(map(), String.t(), term(), keyword()) :: map()
   def execute_bound_agent_tool(

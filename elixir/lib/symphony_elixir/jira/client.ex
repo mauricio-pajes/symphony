@@ -25,6 +25,88 @@ defmodule SymphonyElixir.Jira.Client do
     with {:ok, _settings} <- settings(tracker_settings), do: :ok
   end
 
+  @spec validate_intake(map()) :: :ok | {:error, term()}
+  def validate_intake(provider) do
+    with {:ok, _settings} <- settings(%{provider: provider}, false), do: :ok
+  end
+
+  @spec intake_secret_environment_names(map()) :: [String.t()]
+  def intake_secret_environment_names(provider) do
+    ["JIRA_EMAIL", "JIRA_API_TOKEN" | env_reference_names([provider["email"], provider["api_token"]])]
+  end
+
+  @spec fetch_linked_issue(String.t(), map(), keyword()) :: {:ok, map() | nil} | {:error, term()}
+  def fetch_linked_issue(description, provider, opts \\ []) do
+    request_fun = Keyword.get(opts, :request_fun, &perform_request/5)
+
+    with {:ok, settings} <- settings(%{provider: provider}, false),
+         {:ok, key} when not is_nil(key) <- linked_issue_key(description, settings) do
+      fetch_linked_issue_fields(key, Map.put(settings, :follow_redirects, false), request_fun)
+    end
+  end
+
+  defp linked_issue_key(description, settings) do
+    site = URI.parse(settings.base_url)
+    issue_path = String.trim_trailing(site.path || "", "/") <> "/browse/"
+
+    keys =
+      ~r{https://[^\s<>\[\]()"']+}u
+      |> Regex.scan(description)
+      |> Enum.map(fn [url] -> issue_key_from_url(URI.parse(url), site, issue_path) end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    case keys do
+      [] ->
+        {:ok, nil}
+
+      [key] ->
+        if is_nil(settings.project_key) or String.starts_with?(key, String.upcase(settings.project_key) <> "-") do
+          {:ok, key}
+        else
+          {:error, :jira_intake_project_mismatch}
+        end
+
+      _ ->
+        {:error, :multiple_linked_jira_issues}
+    end
+  end
+
+  defp issue_key_from_url(%URI{scheme: "https", host: host, port: port, userinfo: nil, path: path}, site, prefix)
+       when host == site.host and port == site.port and is_binary(path) do
+    key = path |> String.replace_prefix(prefix, "") |> String.trim_trailing("/") |> String.upcase()
+
+    if String.starts_with?(path, prefix) and Regex.match?(~r/^[A-Z][A-Z0-9_]*-[0-9]+$/, key), do: key
+  end
+
+  defp issue_key_from_url(_url, _site, _prefix), do: nil
+
+  defp fetch_linked_issue_fields(key, settings, request_fun) do
+    fields = %{"fields" => "summary,description,status,comment,issuelinks"}
+
+    with {:ok, payload} <- request_with_settings("GET", "/rest/api/3/issue/" <> key, fields, nil, settings, request_fun) do
+      linked_issue_context(payload, key, settings.base_url)
+    end
+  end
+
+  defp linked_issue_context(%{"key" => key, "fields" => %{"summary" => summary} = fields}, key, base_url)
+       when is_binary(summary) do
+    description = description_text(fields["description"]) || ""
+    comments = get_in(fields, ["comment", "comments"]) || []
+    comments = comments |> Enum.take(-20) |> Enum.map_join("\n\n", &(description_text(&1["body"]) || ""))
+
+    links =
+      (fields["issuelinks"] || [])
+      |> Enum.flat_map(fn link -> Enum.map([link["inwardIssue"], link["outwardIssue"]], &(&1 && &1["key"])) end)
+      |> Enum.filter(&is_binary/1)
+      |> Enum.join(", ")
+
+    context = "Jira #{key}: #{summary}\n#{base_url}/browse/#{key}\n\n#{description}\n\nJira comments:\n#{comments}\n\nLinked Jira issues: #{links}"
+    {:ok, %{description: description, context: context}}
+  end
+
+  defp linked_issue_context(_payload, _key, _base_url), do: {:error, :jira_unknown_payload}
+
   @spec secret_environment_names(map()) :: [String.t()]
   def secret_environment_names(tracker_settings) do
     provider = provider_settings(tracker_settings)
@@ -402,6 +484,7 @@ defmodule SymphonyElixir.Jira.Client do
       ]
 
       request_opts = if is_nil(body), do: request_opts, else: Keyword.put(request_opts, :json, body)
+      request_opts = if settings[:follow_redirects] == false, do: Keyword.put(request_opts, :redirect, false), else: request_opts
 
       case Req.request(request_opts) do
         {:ok, response} -> {:ok, %{status: response.status, body: response.body}}
@@ -410,7 +493,7 @@ defmodule SymphonyElixir.Jira.Client do
     end
   end
 
-  defp settings(tracker_settings) when is_map(tracker_settings) do
+  defp settings(tracker_settings, require_project? \\ true) when is_map(tracker_settings) do
     provider = provider_settings(tracker_settings)
     base_url = resolve_setting(provider["base_url"], System.get_env("JIRA_BASE_URL"))
     email = resolve_setting(provider["email"], System.get_env("JIRA_EMAIL"))
@@ -427,7 +510,7 @@ defmodule SymphonyElixir.Jira.Client do
       not present_string?(api_token) ->
         {:error, :missing_jira_api_token}
 
-      not present_string?(project_key) ->
+      require_project? and not present_string?(project_key) ->
         {:error, :missing_jira_project_key}
 
       true ->
@@ -491,7 +574,7 @@ defmodule SymphonyElixir.Jira.Client do
 
   defp valid_base_url?(value) when is_binary(value) do
     case URI.parse(value) do
-      %URI{scheme: "https", host: host, query: nil, fragment: nil} when is_binary(host) -> true
+      %URI{scheme: "https", host: host, userinfo: nil, query: nil, fragment: nil} when is_binary(host) -> true
       _ -> false
     end
   end

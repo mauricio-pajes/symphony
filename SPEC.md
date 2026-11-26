@@ -107,6 +107,9 @@ Important boundary:
    - Builds prompt from issue + workflow template.
    - Launches the coding agent app-server client.
    - Streams agent updates back to the orchestrator.
+   - MAY enrich a Linear issue's prompt from a linked Jira issue without changing its dispatch identity.
+   - MAY select an agent from the current tracker state and classify unresolved scope before dispatch.
+     When a routed phase changes, the next attempt reuses the issue workspace.
 
 7. `Status Surface` (OPTIONAL)
    - Presents human-readable runtime status (for example terminal output, dashboard, or other

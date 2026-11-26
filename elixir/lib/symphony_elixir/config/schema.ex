@@ -153,6 +153,12 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
+      field(:providers_by_state, :map, default: %{})
+      field(:classify_scope_states, {:array, :string}, default: [])
+      field(:jira_intake, :map)
+      field(:claude_command, {:array, :string}, default: ["claude", "-p", "--verbose", "--output-format", "stream-json"])
+      field(:gemini_command, {:array, :string}, default: ["agy", "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox", "--model", "gemini-4-neon-high"])
+      field(:classifier_command, {:array, :string}, default: ["codex", "-a", "never", "exec", "--ignore-user-config", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--json", "-"])
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -160,7 +166,18 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+        [
+          :max_concurrent_agents,
+          :max_turns,
+          :max_retry_backoff_ms,
+          :max_concurrent_agents_by_state,
+          :providers_by_state,
+          :classify_scope_states,
+          :jira_intake,
+          :claude_command,
+          :gemini_command,
+          :classifier_command
+        ],
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
@@ -168,7 +185,40 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
+      |> validate_change(:providers_by_state, &validate_provider_routes/2)
+      |> update_change(:providers_by_state, &Schema.normalize_state_limits/1)
+      |> update_change(:classify_scope_states, &Enum.map(&1, fn state -> Schema.normalize_issue_state(state) end))
+      |> validate_change(:classify_scope_states, fn field, states ->
+        if "" in states, do: [{field, "state names must not be blank"}], else: []
+      end)
+      |> validate_command(:claude_command)
+      |> validate_command(:gemini_command)
+      |> validate_command(:classifier_command)
     end
+
+    defp validate_command(changeset, field) do
+      validate_change(changeset, field, &validate_command_args/2)
+    end
+
+    defp validate_command_args(field, [executable | args]) when is_binary(executable) do
+      if String.trim(executable) != "" and Enum.all?(args, &is_binary/1) do
+        []
+      else
+        [{field, "requires a nonblank executable followed by string arguments"}]
+      end
+    end
+
+    defp validate_command_args(field, _command), do: [{field, "requires an executable followed by its arguments"}]
+
+    defp validate_provider_routes(field, routes) do
+      if Enum.all?(routes, &valid_provider_route?/1) and map_size(routes) == map_size(Schema.normalize_state_limits(routes)) do
+        []
+      else
+        [{field, "requires unique nonblank state names with codex, claude, or gemini providers"}]
+      end
+    end
+
+    defp valid_provider_route?({state, provider}), do: String.trim(state) != "" and provider in ["codex", "claude", "gemini"]
   end
 
   defmodule Codex do

@@ -1,11 +1,11 @@
 defmodule SymphonyElixir.AgentRunner do
   @moduledoc """
-  Executes a single tracker work item in its workspace with Codex.
+  Executes a single tracker work item in its workspace with the selected agent.
   """
 
   require Logger
+  alias SymphonyElixir.{AgentRouting, Config, HeadlessAgent, PromptBuilder, Tracker, Workspace}
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, PromptBuilder, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @type worker_host :: String.t() | nil
@@ -44,7 +44,7 @@ defmodule SymphonyElixir.AgentRunner do
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            run_selected_agent(workspace, issue, codex_update_recipient, opts, worker_host)
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -85,6 +85,53 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
+  defp run_selected_agent(workspace, issue, recipient, opts, worker_host) do
+    settings = Config.settings!()
+    classifier = fn prompt -> run_headless(:classifier, settings.agent.classifier_command, workspace, prompt, issue, recipient) end
+
+    with {:ok, issue, requirements} <- AgentRouting.enrich(issue, settings.agent),
+         {:ok, provider} <- AgentRouting.select(issue, requirements, settings.agent, classifier) do
+      Logger.info("Selected agent provider=#{provider} #{issue_context(issue)}")
+      run_provider(provider, workspace, issue, recipient, Keyword.put(opts, :agent_settings, settings.agent), worker_host)
+    end
+  end
+
+  defp run_provider(:codex, workspace, issue, recipient, opts, worker_host) do
+    run_codex_turns(workspace, issue, recipient, opts, worker_host)
+  end
+
+  defp run_provider(provider, workspace, issue, recipient, opts, nil) do
+    command = headless_command(provider, opts[:agent_settings])
+    prompt = build_turn_prompt(issue, opts, 1, 1)
+
+    with {:ok, _result} <- run_headless(provider, command, workspace, prompt, issue, recipient), do: :ok
+  end
+
+  defp run_provider(_provider, _workspace, _issue, _recipient, _opts, _worker_host),
+    do: {:error, :agent_routing_requires_local_worker}
+
+  defp headless_command(:claude, agent), do: agent.claude_command
+  defp headless_command(:gemini, agent), do: agent.gemini_command
+
+  defp run_headless(provider, command, workspace, prompt, issue, recipient) do
+    on_progress = fn ->
+      send_codex_update(recipient, issue, %{
+        event: :agent_progress,
+        timestamp: DateTime.utc_now(),
+        message: "#{provider} is running"
+      })
+    end
+
+    HeadlessAgent.run(provider, command, workspace, prompt,
+      secret_names: Tracker.bind_agent_tools().secret_environment_names,
+      timeout_ms: headless_timeout(provider),
+      on_progress: on_progress
+    )
+  end
+
+  defp headless_timeout(:classifier), do: min(60_000, Config.settings!().codex.turn_timeout_ms)
+  defp headless_timeout(_provider), do: Config.settings!().codex.turn_timeout_ms
+
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issues_by_ids/1)
@@ -110,36 +157,35 @@ defmodule SymphonyElixir.AgentRunner do
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
-
-          do_run_codex_turns(
-            app_session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
-
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
-
-          :ok
-
-        {:done, _refreshed_issue} ->
-          :ok
-
-        {:error, reason} ->
-          {:error, reason}
+      with {:continue, refreshed_issue} <- continue_with_issue?(issue, issue_state_fetcher),
+           true <- turn_number < max_turns,
+           false <- AgentRouting.phase_changed?(issue, refreshed_issue, opts[:agent_settings]) do
+        do_run_codex_turns(
+          app_session,
+          workspace,
+          refreshed_issue,
+          codex_update_recipient,
+          opts,
+          issue_state_fetcher,
+          turn_number + 1,
+          max_turns
+        )
+      else
+        {:error, reason} -> {:error, reason}
+        _ -> :ok
       end
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns) do
+    prompt = PromptBuilder.build_prompt(issue, opts)
+
+    if opts[:agent_settings].providers_by_state == %{} do
+      prompt
+    else
+      "Assigned phase: #{issue.state}. Follow the workflow instructions for this phase. End this turn when the tracker advances to the next assigned phase.\n\n" <> prompt
+    end
+  end
 
   defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
     """
