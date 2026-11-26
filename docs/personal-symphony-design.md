@@ -1,6 +1,6 @@
 # Personal Symphony
 
-Design revision 2 · Proposed for review · November 26, 2026
+Design revision 2 · Approved for incremental implementation · November 26, 2026
 
 ## Decision in review
 
@@ -10,10 +10,13 @@ Codex App Server path. Add an opt-in phase coordinator at the runner boundary.
 Symphony selects the agent and owns progress, gates and external updates. Linear
 remains the operator's queue and Jira supplies read-only requirements for linked work.
 
-The branch currently implements an opt-in **state-to-provider mapping** and linked
-Jira intake alongside the upstream path. Internal phases, centralized tracker writes,
-durable recovery, adaptive routing, account isolation and the TUI described here are
-proposals. See the [roadmap and verification evidence](personal-symphony-roadmap.md).
+The branch implements the opt-in **state-to-provider mapping** and linked Jira
+intake alongside the upstream path. The independent read-only TUI uses the
+current snapshot and issue endpoints. The internal phase reducer and
+deterministic routing policy are tested components. The production dispatch
+path still uses the tracker-driven mode while durable admission, worker
+isolation and centralized effects are added. See the
+[roadmap and verification evidence](personal-symphony-roadmap.md).
 
 | Existing boundary | Proposed extension |
 | --- | --- |

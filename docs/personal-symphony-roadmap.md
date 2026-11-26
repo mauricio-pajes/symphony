@@ -1,22 +1,23 @@
 # Personal Symphony roadmap
 
-Design revision 2 · Proposed · November 26, 2026
+Design revision 2 · Approved for incremental implementation · November 26, 2026
 
 ## Rollout and exit criteria
 
 | Stage | Deliverable | Exit criteria |
 | --- | --- | --- |
 | 0. Provider preflight | Confirm installed runtimes, supported authentication, model and effort, structured output and observed telemetry with one approved identity per provider. | Repeat a synthetic execution with no private data. Record exact versions, success shape and model when available. Use controlled fixtures for rate-limit, timeout, invalid output and partial failures. Check the provider's effective filesystem, tool, network and credential boundaries before real repo work. |
-| 1. Read-only TUI | After design review, build a Go console against the current loopback GET API using synthetic issues. This can run alongside the workflow development. | Inspect running, retrying and blocked issues and available usage. Verify keyboard use, resizing, reconnect and daemon continuity. No writes or assumption of richer metadata. |
+| 1. Read-only TUI | Go console against the current loopback GET API, with optional local source artwork. In use on the synthetic pilot. | Inspect running, retrying and blocked issues and available usage. Verify keyboard use, resizing, reconnect and daemon continuity. |
 | 2. Deterministic router and serial workflow | Add one opt-in internal phase sequence, direct provider adapters, routing explanations and structured local outcomes. Preserve the tracker-driven mode. | A clear ticket uses no classifier, an ambiguous case classifies once per requirement revision, and the same Linear state supports a verified handoff. Exercise independent review, rejection of bad evidence and bounded rework. Prove one writer across cancellation, timed-out or surviving descendants, retries, late events, reload and restart. Parked work stays parked across polls and restarts. |
 | 3. Profiles, durable recovery and authorized effects | Add per-project account bindings and quota observations, persisted checkpoints, an effect journal and central effects. | Prove scoped identities and effective worker isolation. Distinguish cooldown from task retry, and show unknown quota. Verify restart, revocation, cancellation and lost acknowledgements at both sides of the effect boundary. Prevent duplicate comments, transitions and publication. |
 | 4. Live scoped pilot | Choose one approved test queue, Jira project, repository and environment. Make a small change with verifiable acceptance criteria. Use the approved project-specific demo and review rules. | A Jira link resolves the expected revision without changing Jira. A workpad advances with checked evidence. Record and verify the real product UI or native API client with a visible cursor. Provide the approved internal request link or sanitized cURL where applicable. Pause for human review and preserve approval boundaries. |
 | 5. Comparative evaluation | Establish the Codex-only baseline. Measure deterministic multi-provider runs and replay policy candidates in shadow mode. | Compare quality, elapsed and human time, consumption, throughput, rework and interventions. Declare assumptions and unknowns. Promote a routing change only when scoped results support it. |
 | 6. Rich console, more profiles and selective adaptation | Add versioned events, history, authorized operations, verified assets and event-driven motion. Expand profiles and routing policies when justified by observed demand. | Verify cursor replay, permission checks, profile separation, rollback, rate-limit handling and UI controls. A lack of supporting evidence keeps the affected feature on its prior policy. |
 
-Stages 1 and 2 can proceed independently after approval. Stage 2 needs a minimal
-durable admission and worker lease. Add full checkpoint and effect recovery in
-stage 3. Allow additional
+The deterministic policy, profile eligibility checks, internal phases, and
+revision-bound handoffs have local tests. Stage 2 activation needs a durable
+admission record and a verified worker lease. Add full checkpoint and effect
+recovery in stage 3. Allow additional
 graph behavior and parallel work when the pilot identifies a repeatable
 need. Measure the public snapshot load before adding push transport.
 
@@ -39,18 +40,16 @@ does not authorize sending work material.
 | Codex | Live synthetic App Server turn with explicit `on-request`, plus a synthetic Codex classifier result. Generated schema verifies the declared account/usage and session surfaces, without validating multiple profiles or quota data. |
 | Claude Code | Live synthetic CLI output on the earlier slice. Current CLI version and flags inspected. Permission and usage behavior in an isolated live worker still require preflight. |
 | Antigravity | Updated standalone CLI to 1.5.18 and verified the approved personal identity and presence of quota metadata through its interactive status-line hook. A live synthetic Neon Low turn returned NDJSON with success, a schema-matching `structured_output` and usage metadata. The current parser's success predicate matches the terminal event. It reads the text response and discards the separate structured field. This was a direct CLI check outside Symphony. |
-| Terminal design | Three textual layouts and the GET contract covered by existing Phoenix endpoint tests. The Go console, use of original assets and event-driven animation await implementation. |
+| Terminal client | The separate Go console uses the existing GET endpoints, displays observed provider activity, and supports optional local PNGs. A synthetic OTP daemon supplies the demo data. |
+| Routing and workflow components | The deterministic router evaluates scoped profile eligibility, capacity, independence and affinity. A combined test passes verified artifacts and criterion evidence across internal phases and parks at Human Review. The legacy scheduler remains in use. |
 
-The review identified precise test cases for the next runtime increment.
-The current headless timeout measures inactivity while output continues,
-whereas the classifier already has a hard deadline. The current runner
-discards headless result details before deciding continuation, and the
-legacy successful-exit path can revisit an unchanged active ticket.
-Add an elapsed-time budget, distinct typed outcomes and a verified drain
-before enabling automatic handoffs. An existing process-group test passed.
-Verify shutdown with a realistic descendant process on the supported host
-matrix. The absence of an explicit process-group call in the launcher
-alone does not establish that OTP creates none.
+Routed headless providers now enforce an elapsed-time budget even while
+emitting progress. The local deadline test also checks that a background
+descendant does not write after timeout. The current production runner
+discards headless results before deciding continuation, and the legacy
+successful-exit path can revisit an unchanged active ticket. Before enabling
+internal dispatch, bind typed outcomes to the durable lease and prove that
+draining an attempt precedes workspace reuse across host cancellation and restart.
 
 ## Comparison with a Codex-only workflow
 

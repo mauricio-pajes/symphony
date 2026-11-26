@@ -1,6 +1,6 @@
 # ADR 0004 · Deterministic routing with scoped profiles
 
-- Proposed · November 26, 2026
+- Accepted for incremental implementation · November 26, 2026
 
 ## Decision
 

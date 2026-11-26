@@ -1,6 +1,6 @@
 # ADR 0003 · Internal workflow under the existing issue claim
 
-- Proposed · November 26, 2026
+- Accepted for incremental implementation · November 26, 2026
 
 ## Context
 
