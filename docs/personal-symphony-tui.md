@@ -1,6 +1,9 @@
 # Symphony terminal console
 
-Design revision 2 · Proposed wireframes · November 26, 2026
+Design revision 2 · Initial read-only client · November 26, 2026
+
+See the [terminal client instructions](../tui/README.md) to connect to a local daemon
+and set up local original artwork.
 
 ## Product and stack
 

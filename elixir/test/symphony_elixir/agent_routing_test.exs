@@ -3,6 +3,7 @@ defmodule SymphonyElixir.AgentRoutingTest do
 
   alias SymphonyElixir.{AgentRouting, HeadlessAgent, Jira, PathSafety}
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixirWeb.Presenter
 
   @routes %{
     jira_intake: nil,
@@ -327,6 +328,35 @@ defmodule SymphonyElixir.AgentRoutingTest do
     refute File.exists?(Path.join(workspace, "late-write"))
   end
 
+  test "headless progress cannot extend the elapsed-time budget" do
+    root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
+    workspace = Path.join(root, "TASK-1")
+    File.mkdir_p!(workspace)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: root)
+
+    command = [
+      "/bin/sh",
+      "-c",
+      "(sleep 0.6; touch descendant-write) & for i in $(seq 1 60); do echo '{}'; sleep 0.025; done"
+    ]
+
+    test_process = self()
+    started = System.monotonic_time(:millisecond)
+
+    assert {:error, {:agent_timeout, :claude}} =
+             HeadlessAgent.run(:claude, command, workspace, "Review",
+               timeout_ms: 400,
+               max_duration_ms: 180,
+               on_progress: fn -> send(test_process, :headless_progress) end
+             )
+
+    assert_received :headless_progress
+    assert_received :headless_progress
+    assert System.monotonic_time(:millisecond) - started < 1_000
+    Process.sleep(650)
+    refute File.exists?(Path.join(workspace, "descendant-write"))
+  end
+
   test "the agent process group is stopped when its worker is cancelled" do
     root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
     workspace = Path.join(root, "TASK-1")
@@ -427,6 +457,7 @@ defmodule SymphonyElixir.AgentRoutingTest do
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
     Orchestrator.request_refresh()
     assert await(fn -> File.exists?(Path.join(workspace, "planning")) end)
+    assert await(fn -> match?(%{running: [%{provider: :gemini}]}, Orchestrator.snapshot()) end)
     assert {:ok, canonical_workspace} = PathSafety.canonicalize(workspace)
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{issue | state: "Agent Review"}])
@@ -440,6 +471,16 @@ defmodule SymphonyElixir.AgentRoutingTest do
     File.touch!(Path.join(workspace, "release"))
     assert await(fn -> File.exists?(Path.join(workspace, "reviewing")) end)
     assert File.exists?(Path.join(workspace, "plan-complete"))
+    assert await(fn -> match?(%{running: [%{provider: :claude}]}, Orchestrator.snapshot()) end)
+
+    send(Orchestrator, {
+      :codex_worker_update,
+      issue.id,
+      %{event: :agent_progress, timestamp: DateTime.utc_now(), worker_pid: self(), provider: :gemini}
+    })
+
+    assert %{running: [%{provider: :claude}]} = Presenter.state_payload(Orchestrator, 1_000)
+    assert {:ok, %{running: %{provider: :claude}}} = Presenter.issue_payload(issue.identifier, Orchestrator, 1_000)
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{issue | state: "Human Review"}])
     Orchestrator.request_refresh()

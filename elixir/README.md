@@ -118,6 +118,10 @@ Optional flags:
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
 - `--port` also starts the Phoenix observability service (default: disabled)
 
+The [terminal console](../tui/README.md) connects to the enabled observability service on loopback.
+The snapshot and issue endpoints include a `provider` field when adapter activity identifies
+the worker. The terminal client can also read earlier servers where this field is absent.
+
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
 Codex session prompt.
 
@@ -245,6 +249,9 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
+- Routed headless providers use `codex.turn_timeout_ms` as the silence interval and default
+  elapsed-time cap. Set `agent.headless_max_duration_ms` to configure the elapsed limit separately.
+  Classifier invocations retain a cap of at most one minute.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch

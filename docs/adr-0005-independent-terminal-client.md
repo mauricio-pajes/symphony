@@ -1,6 +1,6 @@
 # ADR 0005 · Independent terminal console
 
-- Proposed · November 26, 2026
+- Accepted · November 26, 2026
 
 ## Decision
 

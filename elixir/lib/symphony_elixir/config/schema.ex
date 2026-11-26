@@ -156,6 +156,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:providers_by_state, :map, default: %{})
       field(:classify_scope_states, {:array, :string}, default: [])
       field(:jira_intake, :map)
+      field(:headless_max_duration_ms, :integer)
       field(:claude_command, {:array, :string}, default: ["claude", "-p", "--verbose", "--output-format", "stream-json"])
       field(:gemini_command, {:array, :string}, default: ["agy", "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox", "--model", "gemini-4-neon-high"])
       field(:classifier_command, {:array, :string}, default: ["codex", "-a", "never", "exec", "--ignore-user-config", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--json", "-"])
@@ -174,6 +175,7 @@ defmodule SymphonyElixir.Config.Schema do
           :providers_by_state,
           :classify_scope_states,
           :jira_intake,
+          :headless_max_duration_ms,
           :claude_command,
           :gemini_command,
           :classifier_command
@@ -183,6 +185,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
+      |> validate_number(:headless_max_duration_ms, greater_than: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
       |> validate_change(:providers_by_state, &validate_provider_routes/2)

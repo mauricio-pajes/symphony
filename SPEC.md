@@ -1151,6 +1151,10 @@ Timeouts:
   app-server output resets it, so it is not a total turn runtime cap
 - `codex.stall_timeout_ms`: enforced by orchestrator based on event inactivity
 
+The fork's optional headless provider runners also enforce an elapsed-time cap. The default is
+`codex.turn_timeout_ms` and the fork accepts `agent.headless_max_duration_ms` as an override.
+This does not change the Codex App Server turn timeout.
+
 Error mapping (RECOMMENDED normalized categories):
 
 - `codex_not_found`
@@ -1499,6 +1503,9 @@ Enablement (extension):
 #### 13.7.2 JSON REST API (`/api/v1/*`)
 
 Provide a JSON REST API under `/api/v1/*` for current runtime state and operational debugging.
+
+In the multi-provider fork, running and blocked entries may include an observed `provider`
+(`codex`, `claude`, or `gemini`). Clients should tolerate missing or unknown providers.
 
 Minimum endpoints:
 

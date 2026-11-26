@@ -52,10 +52,11 @@ defmodule SymphonyElixir.HeadlessAgent do
     cleanup = watch_owner(self(), os_pid, scratch)
     progress = Keyword.get(opts, :on_progress, fn -> :ok end)
     timeout_ms = opts[:timeout_ms] || 300_000
-    deadline = if provider == :classifier, do: System.monotonic_time(:millisecond) + timeout_ms
-    progress.()
+    max_duration_ms = opts[:max_duration_ms] || timeout_ms
+    deadline = System.monotonic_time(:millisecond) + max_duration_ms
 
     try do
+      progress.()
       await_result(port, provider, timeout_ms, deadline, progress, nil)
     after
       send(cleanup, {:finished, self()})
@@ -97,7 +98,7 @@ defmodule SymphonyElixir.HeadlessAgent do
   defp encode_input(_provider, prompt), do: prompt
 
   defp await_result(port, provider, timeout_ms, deadline, progress, result) do
-    remaining = if deadline, do: deadline - System.monotonic_time(:millisecond), else: timeout_ms
+    remaining = min(timeout_ms, deadline - System.monotonic_time(:millisecond))
 
     if remaining <= 0 do
       {:error, {:agent_timeout, provider}}

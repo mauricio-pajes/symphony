@@ -4,6 +4,7 @@ Symphony turns project work into isolated, autonomous implementation runs, allow
 work instead of supervising coding agents.
 
 This fork can also [read Jira links from a personal Linear queue and route phases to different agents](elixir/README.md#personal-linear-queue-with-jira-intake-and-multiple-agents).
+The independent [terminal console](tui/README.md) reads the running daemon's queue and session snapshots.
 
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)
 

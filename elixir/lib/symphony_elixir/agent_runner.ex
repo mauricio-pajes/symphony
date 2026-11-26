@@ -57,13 +57,13 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp codex_message_handler(recipient, issue) do
     fn message ->
-      send_codex_update(recipient, issue, message)
+      send_codex_update(recipient, issue, Map.put(message, :provider, :codex))
     end
   end
 
   defp send_codex_update(recipient, %Issue{id: issue_id}, message)
        when is_binary(issue_id) and is_pid(recipient) do
-    send(recipient, {:codex_worker_update, issue_id, message})
+    send(recipient, {:codex_worker_update, issue_id, Map.put(message, :worker_pid, self())})
     :ok
   end
 
@@ -118,6 +118,7 @@ defmodule SymphonyElixir.AgentRunner do
       send_codex_update(recipient, issue, %{
         event: :agent_progress,
         timestamp: DateTime.utc_now(),
+        provider: if(provider in [:claude, :gemini], do: provider),
         message: "#{provider} is running"
       })
     end
@@ -125,12 +126,16 @@ defmodule SymphonyElixir.AgentRunner do
     HeadlessAgent.run(provider, command, workspace, prompt,
       secret_names: Tracker.bind_agent_tools().secret_environment_names,
       timeout_ms: headless_timeout(provider),
+      max_duration_ms: headless_max_duration(provider),
       on_progress: on_progress
     )
   end
 
   defp headless_timeout(:classifier), do: min(60_000, Config.settings!().codex.turn_timeout_ms)
   defp headless_timeout(_provider), do: Config.settings!().codex.turn_timeout_ms
+
+  defp headless_max_duration(:classifier), do: headless_timeout(:classifier)
+  defp headless_max_duration(_provider), do: Config.settings!().agent.headless_max_duration_ms
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)

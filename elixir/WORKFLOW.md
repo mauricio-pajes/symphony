@@ -121,6 +121,8 @@ When `agent.jira_intake` is configured, the linked Jira issue is included in the
 When `agent.providers_by_state` is configured, follow the workflow's phase-specific completion rules and
 record the workpad before transitioning to the next active phase. Symphony starts that phase with its
 configured agent. The bundled sample still uses its standard Todo and In Progress flow.
+The optional `agent.headless_max_duration_ms` field bounds each headless provider invocation
+even when the provider keeps emitting updates. It defaults to `codex.turn_timeout_ms`.
 
 For a Blaze ticket queued with a link to Jira, use Linear to track the run and use the linked Jira
 issue as the source of the requirements. A link on its own is enough to start intake. Open the issue
