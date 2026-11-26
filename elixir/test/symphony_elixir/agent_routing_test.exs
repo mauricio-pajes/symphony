@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.AgentRoutingTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.{AgentRouting, HeadlessAgent, Jira}
+  alias SymphonyElixir.{AgentRouting, HeadlessAgent, Jira, PathSafety}
   alias SymphonyElixir.Config.Schema
 
   @routes %{
@@ -285,5 +285,76 @@ defmodule SymphonyElixir.AgentRoutingTest do
     assert :ok = AgentRunner.run(%{issue | state: "Agent Review"})
     assert File.read!(Path.join(workspace, "review")) =~ "Assigned phase: Agent Review"
     assert File.exists?(Path.join(workspace, "plan"))
+  end
+
+  test "the orchestrator hands off a shared workspace and pauses it for human review" do
+    workflow = Workflow.workflow_file_path()
+    root = Path.join(Path.dirname(workflow), "workspaces")
+    workspace = Path.join(root, "HANDOFF-1")
+    plan_result = Jason.encode!(%{event: "result", result: %{status: "SUCCESS", response: "criteria"}})
+    review_result = Jason.encode!(%{type: "result", is_error: false, result: "reviewed"})
+
+    config = %{
+      tracker: %{kind: "memory", active_states: ["Planning", "Agent Review"]},
+      polling: %{interval_ms: 60_000},
+      workspace: %{root: root},
+      agent: %{
+        max_concurrent_agents: 1,
+        providers_by_state: %{"Planning" => "gemini", "Agent Review" => "claude"},
+        gemini_command: [
+          "/bin/sh",
+          "-ce",
+          "touch planning; while [ ! -f release ]; do sleep 0.05; done; touch plan-complete; printf '%s\n' '#{plan_result}'"
+        ],
+        claude_command: [
+          "/bin/sh",
+          "-ce",
+          "test -f plan-complete; touch reviewing; while [ ! -f reviewed ]; do sleep 0.05; done; printf '%s\n' '#{review_result}'"
+        ]
+      }
+    }
+
+    File.write!(workflow, "---\n#{Jason.encode!(config)}\n---\nWork on {{ issue.identifier }}\n")
+    assert :ok = WorkflowStore.force_reload()
+
+    issue = %Issue{id: "handoff", identifier: "HANDOFF-1", state: "Planning", title: "Handoff", dispatchable: true}
+
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      Orchestrator.request_refresh()
+    end)
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Orchestrator.request_refresh()
+    assert await(fn -> File.exists?(Path.join(workspace, "planning")) end)
+    assert {:ok, canonical_workspace} = PathSafety.canonicalize(workspace)
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{issue | state: "Agent Review"}])
+    Orchestrator.request_refresh()
+
+    assert await(fn ->
+             match?(%{running: [%{state: "Agent Review", workspace_path: ^canonical_workspace}]}, Orchestrator.snapshot())
+           end)
+
+    refute File.exists?(Path.join(workspace, "reviewing"))
+    File.touch!(Path.join(workspace, "release"))
+    assert await(fn -> File.exists?(Path.join(workspace, "reviewing")) end)
+    assert File.exists?(Path.join(workspace, "plan-complete"))
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{issue | state: "Human Review"}])
+    Orchestrator.request_refresh()
+    assert await(fn -> match?(%{running: [], retrying: []}, Orchestrator.snapshot()) end)
+    assert File.dir?(workspace)
+  end
+
+  defp await(fun) do
+    Enum.any?(1..200, fn _ ->
+      if fun.() do
+        true
+      else
+        Process.sleep(25)
+        false
+      end
+    end)
   end
 end
