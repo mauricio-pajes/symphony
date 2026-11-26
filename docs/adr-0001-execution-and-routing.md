@@ -24,4 +24,6 @@ Mantener la sesión App Server para Codex. Para Claude Code y Antigravity, lanza
 
 La configuración anterior conserva Codex. El primer incremento requiere CLIs autenticados, permisos acotados y acceso propio de Claude y Antigravity a Linear cuando deban actualizarlo. La clasificación es heurística y puede requerir ajuste por proyecto. El alcance de proceso local se valida con pruebas de salida estructurada, timeout y reaprovechamiento de workspace. La autenticación real y la prueba con servicios externos se verifican en el piloto.
 
+Con entradas sintéticas se ejecutaron los binarios locales de Codex y Claude. El clasificador y Claude devolvieron la salida esperada. Codex App Server 0.170.0 completó un turno con una política explícita `on-request`. La política `reject` del valor predeterminado de upstream fue rechazada por esa versión. Por compatibilidad se declara la política en la configuración del piloto. Antigravity, Linear y Jira quedan por comprobar en el piloto real.
+
 [Diseño y roadmap](personal-symphony-design.md)

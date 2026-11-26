@@ -159,6 +159,8 @@ agent:
     In Progress: codex
     Agent Review: claude
   classify_scope_states: [Todo]
+codex:
+  approval_policy: on-request
 ```
 
 - Paste a Jira `/browse/KEY` URL in the Linear description. Symphony fetches the issue, its visible
@@ -221,7 +223,10 @@ Notes:
   - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
 - `codex.turn_timeout_ms` is the maximum silence interval while a turn is streaming. Each
   app-server update resets it; it is not a total turn runtime cap.
-- Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
+- Supported `codex.approval_policy` values depend on the installed Codex App Server. Codex CLI
+  0.170.0 accepts `on-request` and the object-form `granular` policy. It rejects the older
+  `reject` object used by the bundled defaults. Use `on-request` in the personal workflow above
+  to let Symphony surface requests for approval as blockers.
 - Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
 - When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
   unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
