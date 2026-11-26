@@ -122,13 +122,12 @@ The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown
 Codex session prompt.
 
 The bundled workflow's [demo evidence rules](WORKFLOW.md#demo-evidence) cover recorded product and
-API changes. For Blaze API-only demos, they route Payment Service and ECOM backend to Hoppscotch
-and Platform to Bruno. Review handoff includes the verified video and either an organization-accessible
-Hoppscotch link or a sanitized cURL command from Bruno. A live demo requires access to the real
-client, target environment, and recording tools from the agent's execution host.
+API changes. Configure the project to use its real UI or its authorized native API client. Review
+handoff includes the verified video and a permitted request link or sanitized cURL. A live demo
+requires access to the real client, target environment, and recording tools from the execution host.
 
 The [personal queue intake rules](WORKFLOW.md#intake-from-a-personal-linear-queue) let a Linear ticket
-reference a Blaze Jira issue as its source of requirements. Configure the Linear scope, Jira access, and
+reference a Jira issue as its source of requirements. Configure the Linear scope, Jira access, and
 authorized repositories before running this workflow. The bundled front matter still targets Symphony's
 example project. For a queue scoped to one repository, set `hooks.after_create` to clone that repository.
 For Jira links that can point to several repositories, start with an empty issue workspace and provide a
@@ -180,9 +179,14 @@ codex:
   Override `agent.claude_command`, `agent.gemini_command`, or `agent.classifier_command` with an argv
   list to pin a different model or CLI installation. Use the same streaming output format when
   overriding a command. The classifier and the extra providers currently require a local worker.
-- If the Gemini desktop app bundles `agy` outside the worker's `PATH`, set the first entry in
-  `agent.gemini_command` to the absolute path of the bundled CLI and retain the streaming arguments.
-  Check the model identifier with that binary's `models` command before enabling the route.
+- Prefer the current standalone `agy` from the [official CLI installer](https://antigravity.google/docs/cli/tutorial/).
+  If the binary is outside the worker's `PATH`, set the first entry in `agent.gemini_command` to
+  its absolute path and retain the streaming arguments. Use that binary's `models` command and
+  verify its effective account before enabling the route.
+
+The [Personal Symphony design](../docs/personal-symphony-design.md) describes the proposed internal
+workflow, centralized effects and terminal client. This example documents the current tracker-driven
+routing mode.
 
 ### Minimal workflow example
 
