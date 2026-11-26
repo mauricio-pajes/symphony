@@ -26,4 +26,6 @@ Existing workflows continue to use Codex. The first increment requires authentic
 
 Synthetic inputs exercised the local Codex and Claude binaries. Both the classifier and Claude returned the expected output. Codex App Server 0.170.0 completed a turn with an explicit `on-request` policy and rejected the upstream default `reject` object. The pilot configuration sets the policy explicitly for compatibility. Antigravity, Linear, and Jira still require verification in the live pilot.
 
+The Gemini desktop app's bundled `agy` 1.5.5 advertises newline-delimited JSON input and output, and its `models` command lists `gemini-4-neon-high`. It was available outside the worker's `PATH`. This preflight verifies the binary and model identifier. A real model turn requires the approved pilot profile.
+
 [Design and roadmap](personal-symphony-design.md)

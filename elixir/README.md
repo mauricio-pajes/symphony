@@ -180,6 +180,9 @@ codex:
   Override `agent.claude_command`, `agent.gemini_command`, or `agent.classifier_command` with an argv
   list to pin a different model or CLI installation. Use the same streaming output format when
   overriding a command. The classifier and the extra providers currently require a local worker.
+- If the Gemini desktop app bundles `agy` outside the worker's `PATH`, set the first entry in
+  `agent.gemini_command` to the absolute path of the bundled CLI and retain the streaming arguments.
+  Check the model identifier with that binary's `models` command before enabling the route.
 
 ### Minimal workflow example
 
