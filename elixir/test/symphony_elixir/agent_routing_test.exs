@@ -142,6 +142,106 @@ defmodule SymphonyElixir.AgentRoutingTest do
              Jira.Client.fetch_linked_issue("https://blaze.example/browse/ASH-18", Map.put(provider, "project_key", "OTHER"), request_fun: request)
   end
 
+  test "the worker reads linked Jira requirements over the HTTP client before rendering the phase prompt" do
+    workflow = Workflow.workflow_file_path()
+    root = Path.join(Path.dirname(workflow), "workspaces")
+    token_name = "SYMPHONY_TEST_INTAKE_TOKEN"
+    token = "synthetic-intake-token"
+    previous_token = System.get_env(token_name)
+    on_exit(fn -> restore_env(token_name, previous_token) end)
+    System.put_env(token_name, token)
+
+    stub_jira(fn conn ->
+      body = %{
+        key: "SYN-1",
+        fields: %{
+          summary: "Preserve the filter",
+          description: "Acceptance criteria: keep filtering by status",
+          comment: %{comments: [%{body: "Reuse the existing route"}]},
+          issuelinks: [%{outwardIssue: %{key: "SYN-2"}}]
+        }
+      }
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+    end)
+
+    config = %{
+      tracker: %{kind: "memory", active_states: ["Planning"]},
+      workspace: %{root: root},
+      agent: %{
+        jira_intake: %{
+          base_url: "https://jira.fixture.test",
+          email: "test@example.com",
+          api_token: "$#{token_name}",
+          project_key: "SYN"
+        },
+        providers_by_state: %{"Planning" => "gemini"},
+        classify_scope_states: ["Planning"],
+        classifier_command: ["/bin/sh", "-c", "exit 92"],
+        gemini_command: [
+          "/bin/sh",
+          "-ce",
+          ~S(test -z "$SYMPHONY_TEST_INTAKE_TOKEN"; cat > prompt.json; printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"done"}}')
+        ]
+      }
+    }
+
+    File.write!(workflow, "---\n#{Jason.encode!(config)}\n---\nWork on {{ issue.identifier }}\n{{ issue.description }}\n")
+    assert :ok = WorkflowStore.force_reload()
+
+    issue = %Issue{
+      id: "linear-fixture",
+      identifier: "LINEAR-1",
+      title: "Linked issue",
+      state: "Planning",
+      description: "[Jira](https://jira.fixture.test/browse/SYN-1)"
+    }
+
+    assert :ok = AgentRunner.run(issue)
+    assert_received {:jira_request, "GET", "jira.fixture.test", "/rest/api/3/issue/SYN-1", headers}
+    assert {"authorization", "Basic " <> Base.encode64("test@example.com:#{token}")} in headers
+
+    assert %{"message" => %{"content" => prompt}} =
+             root |> Path.join("LINEAR-1/prompt.json") |> File.read!() |> Jason.decode!()
+
+    assert prompt =~ "Work on LINEAR-1"
+    assert prompt =~ "Acceptance criteria: keep filtering by status"
+    assert prompt =~ "Reuse the existing route"
+    assert prompt =~ "Linked Jira issues: SYN-2"
+    refute prompt =~ token
+  end
+
+  test "Jira intake never follows redirects reported by the transport" do
+    stub_jira(fn conn ->
+      conn
+      |> Plug.Conn.put_resp_header("location", "https://redirect.fixture.test/other")
+      |> Plug.Conn.send_resp(302, "")
+    end)
+
+    provider = %{"base_url" => "https://jira.fixture.test", "email" => "test@example.com", "api_token" => "fixture-token"}
+
+    assert {:error, {:jira_api_status, 302}} =
+             Jira.Client.fetch_linked_issue("https://jira.fixture.test/browse/SYN-1", provider)
+
+    assert_received {:jira_request, "GET", "jira.fixture.test", "/rest/api/3/issue/SYN-1", _headers}
+    refute_received {:jira_request, _, _, _, _}
+  end
+
+  defp stub_jira(respond) do
+    previous = Req.default_options()
+    on_exit(fn -> Req.default_options(previous) end)
+    owner = self()
+
+    Req.default_options(
+      plug: fn conn ->
+        send(owner, {:jira_request, conn.method, conn.host, conn.request_path, conn.req_headers})
+        respond.(conn)
+      end
+    )
+  end
+
   test "runs real subprocesses for routed CLI turns and keeps tracker credentials out of their environment" do
     root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
     workspace = Path.join(root, "TASK-1")
