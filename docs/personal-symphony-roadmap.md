@@ -61,7 +61,10 @@ See the [container lease decision](adr-0006-local-container-leases.md).
 The [synthetic Linear pilot](adr-0007-synthetic-linear-pilot.md) recorded
 Human Review from the built daemon against a local Linear GraphQL fixture.
 It verified persisted acknowledgement, uncertain transition recovery by
-observation, and cancellation after the source issue changed.
+observation, and cancellation after the source issue changed. An
+authenticated Linear Cloud test then confirmed the real ticket transition
+with an independent API read and a four-phase journal entry. That test used
+simulated Jira requirements and fixture workers.
 
 ## Comparison with a Codex-only workflow
 

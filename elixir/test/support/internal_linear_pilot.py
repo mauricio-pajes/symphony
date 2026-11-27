@@ -55,7 +55,7 @@ class LinearFixture:
                         "id": ISSUE,
                         "identifier": "SYMP-1",
                         "title": title,
-                        "description": JIRA,
+                        "description": f"[{JIRA}](<{JIRA}>)" if self.mode == "normal" else JIRA,
                         "url": "https://linear.example.test/issue/SYMP-1",
                         "archivedAt": None,
                         "team": {"id": TEAM},

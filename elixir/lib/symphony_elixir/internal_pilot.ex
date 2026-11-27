@@ -17,6 +17,12 @@ defmodule SymphonyElixir.InternalPilot do
   alias SymphonyElixir.Linear.InternalPilot, as: Linear
 
   @jira_url "https://jira.fixture.test/browse/PILOT-1"
+  @jira_descriptions [
+    @jira_url,
+    "<#{@jira_url}>",
+    "[#{@jira_url}](#{@jira_url})",
+    "[#{@jira_url}](<#{@jira_url}>)"
+  ]
   @criteria "fixture-response"
   @requirements "Acceptance criteria:\n- The result file contains fixture-response."
   @expected "fixture-response\n"
@@ -210,7 +216,7 @@ defmodule SymphonyElixir.InternalPilot do
   defp dispatch_observed(pilot, supervisor), do: launch_phase(pilot, supervisor)
 
   defp eligible?(pilot, item) do
-    start_state?(item.issue.state) and is_binary(item.issue.description) and String.trim(item.issue.description) == @jira_url and
+    start_state?(item.issue.state) and is_binary(item.issue.description) and String.trim(item.issue.description) in @jira_descriptions and
       (pilot.source == nil or source(item) == pilot.source)
   end
 

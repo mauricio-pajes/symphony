@@ -221,6 +221,7 @@ agent:
 
 Set the test issue description to the single line
 `https://jira.fixture.test/browse/PILOT-1` and put it in Todo or To Do.
+The pilot also accepts the Markdown form that Linear returns for that URL.
 Start the daemon with this separate `WORKFLOW.md` as described in [Run](#run).
 The host will confirm project and team scope and resolve the Jira link with
 the local fixture. It verifies a synthetic response file after isolated
