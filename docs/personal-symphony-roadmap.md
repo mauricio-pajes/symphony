@@ -14,11 +14,11 @@ Design revision 2 · Approved for incremental implementation · November 26, 202
 | 5. Comparative evaluation | Establish the Codex-only baseline. Measure deterministic multi-provider runs and replay policy candidates in shadow mode. | Compare quality, elapsed and human time, consumption, throughput, rework and interventions. Declare assumptions and unknowns. Promote a routing change only when scoped results support it. |
 | 6. Rich console, more profiles and selective adaptation | Add versioned events, history, authorized operations, verified assets and event-driven motion. Expand profiles and routing policies when justified by observed demand. | Verify cursor replay, permission checks, profile separation, rollback, rate-limit handling and UI controls. A lack of supporting evidence keeps the affected feature on its prior policy. |
 
-The deterministic policy, profile eligibility checks, internal phases, and
-revision-bound handoffs have local tests. Stage 2 activation needs a durable
-admission record and a verified worker lease. Add full checkpoint and effect
-recovery in stage 3. Allow additional
-graph behavior and parallel work when the pilot identifies a repeatable
+The deterministic policy, internal phases and durable launch boundary have
+been exercised with a local container fixture. Stage 2 activation still
+requires production scheduling, authenticated provider adapters and
+revision-bound outcomes. Add full checkpoint and effect recovery in stage
+3. Allow additional graph behavior and parallel work when the pilot identifies a repeatable
 need. Measure the public snapshot load before adding push transport.
 
 The earlier increment remains available for isolated synthetic testing.
@@ -42,7 +42,8 @@ does not authorize sending work material.
 | Antigravity | Updated standalone CLI to 1.5.18 and verified the approved personal identity and presence of quota metadata through its interactive status-line hook. A live synthetic Neon Low turn returned NDJSON with success, a schema-matching `structured_output` and usage metadata. The current parser's success predicate matches the terminal event. It reads the text response and discards the separate structured field. This was a direct CLI check outside Symphony. |
 | Terminal client | The separate Go console uses the existing GET endpoints, displays observed provider activity, and supports optional local PNGs. A synthetic OTP daemon supplies the demo data. |
 | Routing and workflow components | The deterministic router evaluates scoped profile eligibility, capacity, independence and affinity. A combined test passes verified artifacts and criterion evidence across internal phases and parks at Human Review. The legacy scheduler remains in use. |
-| Durable admission | The single-scheduler journal records launch reservations and matches boot IDs and generations before attachment. Reopening it preserves unresolved leases and requires trusted reconciliation before reuse. Its integration with the production launcher is pending. |
+| Durable admission | The single-scheduler journal records launch reservations and matches boot IDs and generations before attachment. Reopening it preserves unresolved leases and requires trusted reconciliation before reuse. |
+| Isolated internal dispatch | The opt-in fixture routes four phases through real local Docker containers, enforces read-only phases, binds verifier execution to a drained container, and persists Human Review. A timed-out container descendant survives BEAM termination, blocks the next reservation and stops writing after recovery drains the container. Provider work and tracker access use synthetic inputs. |
 
 Routed headless providers now enforce an elapsed-time budget even while
 emitting progress. The local deadline test also checks that a background
@@ -52,8 +53,9 @@ successful-exit path can revisit an unchanged active ticket. Before enabling
 internal dispatch, bind typed outcomes to the durable lease and prove that
 draining an attempt precedes workspace reuse across host cancellation and restart.
 A macOS fixture demonstrated the restart case: a background child wrote after
-the BEAM running its headless parent was forcibly terminated. A worker's
-BEAM monitor is therefore insufficient to prove that its descendants stopped.
+the BEAM running its headless parent was forcibly terminated. The local
+container lease now demonstrates the required separation and verified drain.
+See the [container lease decision](adr-0006-local-container-leases.md).
 
 ## Comparison with a Codex-only workflow
 

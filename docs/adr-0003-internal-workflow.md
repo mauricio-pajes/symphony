@@ -91,6 +91,7 @@ stall, reload, terminal transitions, lost acknowledgement and effect replay.
 A reload can change future policy decisions. Revocation also applies to active
 work and pending effects.
 
+[Local container lease](adr-0006-local-container-leases.md) ·
 [Design](personal-symphony-design.md) ·
 [Roadmap](personal-symphony-roadmap.md) ·
 [SQLite WAL](https://sqlite.org/wal.html)

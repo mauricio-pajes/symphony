@@ -192,6 +192,30 @@ The [Personal Symphony design](../docs/personal-symphony-design.md) describes th
 workflow, centralized effects and terminal client. This example documents the current tracker-driven
 routing mode.
 
+### Isolated internal phase fixture
+
+The opt-in test routes a synthetic item through planning, implementation,
+validation and independent review while the same issue claim remains active.
+It binds each selected phase to a durable reservation, runs a shell command
+in an isolated local Docker container, and parks the item at Human Review.
+It also demonstrates a surviving container descendant after the worker
+BEAM exits and verifies recovery before the workspace can be reused.
+
+Run from `elixir/` with a trusted local Linux Docker Engine. Set its Unix
+socket path and the ID of an installed BusyBox image.
+
+```bash
+docker pull docker.io/library/busybox:1.37
+export SYMPHONY_TEST_DOCKER_SOCKET=/path/to/docker.sock
+export SYMPHONY_TEST_DOCKER_IMAGE="$(docker image inspect busybox:1.37 --format '{{.Id}}')"
+SYMPHONY_RUN_CONTAINER_TESTS=1 mix test test/symphony_elixir/internal_container_worker_test.exs
+```
+
+The fixture uses temporary workspace and journal directories. The container
+worker uses an existing image with no implicit volumes. The daemon's
+regular tracker dispatch remains in use for normal workflows. See the
+[local container lease ADR](../docs/adr-0006-local-container-leases.md).
+
 ### Minimal workflow example
 
 Minimal example:
