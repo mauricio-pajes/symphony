@@ -29,11 +29,12 @@ in Todo and let the next eligible ticket progress.
 The two frontend fixtures share a responsive catalog baseline. Codex
 enables one pre-existing interaction through a bounded JSON change. Four
 offline HTTP checks precede independent Claude Code review. Gemini directs
-the capture viewport and pace. Playwright verifies the actual keyboard
-filter or sort, observes and resets the result, and saves the browser
-recording. The executor uploads and reads back the private video before
-the daemon publishes the matching diff and Human Review. The API-only
-fixture retains its separate Bruno and cURL evidence workflow.
+the capture viewport and pace. Playwright verifies actual mouse clicks
+on the filter or sort, observes and resets the result, and records the
+pointer and click positions. The executor uploads and reads back the
+private video before the daemon publishes the matching diff and Human
+Review. The API-only fixture retains its separate Bruno and cURL
+evidence workflow.
 
 ## Verification
 

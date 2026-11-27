@@ -68,6 +68,9 @@ Use `1`, `2`, and `3` for Queue, Agents, and Timeline. In Queue, use
 `j/k` or the arrow keys to select tickets, `Enter` to focus the inspector,
 and `/` to filter by identifier, state, status, or provider. Press `Esc`
 to return to the queue or clear an active filter. Press `?` for help.
+In the alternate screen, click a tab or ticket to open it. The mouse
+wheel moves through tickets over the queue and scrolls the details
+under the pointer.
 
 ## Verify
 

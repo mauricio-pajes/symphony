@@ -135,6 +135,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyPressMsg:
 		m, command = m.handleKey(msg)
+	case tea.MouseClickMsg:
+		m.click(msg.Mouse())
+	case tea.MouseWheelMsg:
+		m.wheel(msg.Mouse())
 	}
 	if tick := m.scheduleSpriteTick(); tick != nil {
 		if command == nil {
@@ -362,6 +366,65 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd) {
 func (m *model) setPage(page page) {
 	m.page = page
 	m.scroll = 0
+}
+
+func (m model) inBody(mouse tea.Mouse) bool {
+	top := m.bodyTop()
+	return m.width >= 30 && m.height >= 8 &&
+		mouse.X >= 0 && mouse.X < m.width && mouse.Y >= top && mouse.Y < top+m.bodyHeight()
+}
+
+func (m model) overQueue(x int) bool {
+	return m.page == queuePage && (m.width >= 100 && x < m.queueWidth() || m.width < 100 && !m.inspect)
+}
+
+func (m *model) click(mouse tea.Mouse) {
+	if mouse.Button != tea.MouseLeft || m.width < 30 || m.height < 8 {
+		return
+	}
+	if mouse.Y == 0 {
+		labels := m.navLabels()
+		start := m.navStart(labels)
+		for index, label := range labels {
+			if mouse.X >= start && mouse.X < start+len(label) {
+				m.filtering = false
+				m.filter.Blur()
+				m.setPage(page(index))
+				return
+			}
+			start += len(label) + 2
+		}
+	}
+	if !m.inBody(mouse) || !m.overQueue(mouse.X) {
+		return
+	}
+	rows := m.visibleQueueRows(m.filtered())
+	index := mouse.Y - m.bodyTop() - 1
+	if index >= 0 && index < len(rows) {
+		m.filtering = false
+		m.filter.Blur()
+		m.selectTicket(rows[index].ID)
+		m.inspect = m.width < 100
+	}
+}
+
+func (m *model) wheel(mouse tea.Mouse) {
+	if !m.inBody(mouse) {
+		return
+	}
+	delta := 3
+	switch mouse.Button {
+	case tea.MouseWheelUp:
+		delta = -delta
+	case tea.MouseWheelDown:
+	default:
+		return
+	}
+	if m.overQueue(mouse.X) {
+		m.move(delta)
+	} else {
+		m.scrollBy(delta)
+	}
 }
 
 func (m *model) move(offset int) {

@@ -154,6 +154,41 @@ func TestSelectionSurvivesPollAndIgnoresLateDetail(t *testing.T) {
 	}
 }
 
+func TestMouseNavigationUsesVisibleTabsAndQueueRows(t *testing.T) {
+	m := newModel(context.Background(), nil, options{})
+	m.width, m.height = 120, 26
+	m.receivePoll(pollResult{receivedAt: time.Now(), snapshot: snapshot{
+		Running: []ticket{{ID: "SYM-1"}, {ID: "SYM-2"}, {ID: "SYM-3"}},
+	}})
+
+	update := func(msg tea.Msg) {
+		next, _ := m.Update(msg)
+		m = next.(model)
+	}
+	update(tea.MouseClickMsg{X: m.navStart(m.navLabels()) + len("1 Queue  "), Button: tea.MouseLeft})
+	if m.page != agentsPage || m.View().MouseMode != tea.MouseModeCellMotion {
+		t.Fatal("the Agents tab did not respond to a click")
+	}
+	update(tea.MouseClickMsg{X: m.navStart(m.navLabels()), Button: tea.MouseLeft})
+	update(tea.MouseClickMsg{X: 2, Y: m.bodyTop() + 2, Button: tea.MouseLeft})
+	if m.page != queuePage || m.selected != "SYM-2" {
+		t.Fatal("clicking the second queue row did not select it")
+	}
+	update(tea.MouseWheelMsg{X: 2, Y: m.bodyTop() + 2, Button: tea.MouseWheelDown})
+	if m.selected != "SYM-3" {
+		t.Fatal("scrolling over the queue did not move selection")
+	}
+	update(tea.MouseClickMsg{X: m.queueWidth() + 1, Y: m.bodyTop() + 1, Button: tea.MouseLeft})
+	if m.selected != "SYM-3" {
+		t.Fatal("clicking the inspector changed queue selection")
+	}
+	m.width = 57
+	update(tea.MouseClickMsg{X: 2, Y: m.bodyTop() + 1, Button: tea.MouseLeft})
+	if m.selected != "SYM-1" || !m.inspect {
+		t.Fatal("clicking a compact queue row did not open the inspector")
+	}
+}
+
 func TestTerminalSafeStringsAndResponsiveViews(t *testing.T) {
 	raw := "Before\x1b]52;c;ignored\x07\x1b[31m\x9b32m\u202e\u2066\x00\r\nAfter"
 	safe := clean(raw)

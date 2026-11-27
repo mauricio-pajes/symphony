@@ -36,6 +36,9 @@ func newPalette(light bool) palette {
 func (m model) View() tea.View {
 	view := tea.NewView(m.render())
 	view.AltScreen = !m.opt.noAltScreen
+	if view.AltScreen {
+		view.MouseMode = tea.MouseModeCellMotion
+	}
 	return view
 }
 
@@ -56,19 +59,30 @@ func (m model) render() string {
 	return strings.Join(lines, "\n")
 }
 
-func (m model) header() []string {
-	labels := []string{"1 Queue", "2 Agents", "3 Timeline"}
+const headerName = ">_  SYMPHONY"
+
+func (m model) navLabels() []string {
 	if m.width < 58 {
-		labels = []string{"1 Q", "2 A", "3 T"}
+		return []string{"1 Q", "2 A", "3 T"}
 	}
+	return []string{"1 Queue", "2 Agents", "3 Timeline"}
+}
+
+func (m model) navStart(labels []string) int {
+	return max(4+len(headerName), m.width-2-len(strings.Join(labels, "  ")))
+}
+
+func (m model) header() []string {
+	labels := m.navLabels()
+	start := m.navStart(labels)
 	for index, label := range labels {
 		if page(index) == m.page {
 			labels[index] = m.paint(label, m.palette.accent, nil, true)
 		}
 	}
 	nav := strings.Join(labels, "  ")
-	name := m.paint(">_  SYMPHONY", m.palette.text, nil, true)
-	top := name + strings.Repeat(" ", max(2, m.width-4-ansi.StringWidth(name)-ansi.StringWidth(nav))) + nav
+	name := m.paint(headerName, m.palette.text, nil, true)
+	top := name + strings.Repeat(" ", start-2-len(headerName)) + nav
 
 	var health string
 	switch {
@@ -208,16 +222,21 @@ func (m model) filterLine() string {
 	return "  " + m.clip("Filter  "+clean(m.filter.Value()), m.width-2)
 }
 
-func (m model) bodyHeight() int {
-	height := m.height - 3
-	if m.showHelp {
-		height -= 2
-	}
+func (m model) bodyTop() int {
+	top := 2
 	if m.showStrip() {
-		height -= m.stripCardHeight() + 2
+		top += m.stripCardHeight() + 2
 	}
 	if m.showFilter() {
-		height--
+		top++
+	}
+	return top
+}
+
+func (m model) bodyHeight() int {
+	height := m.height - m.bodyTop() - 1
+	if m.showHelp {
+		height -= 2
 	}
 	return max(1, height)
 }
@@ -269,9 +288,7 @@ func (m model) queueLines(width int) []string {
 		return append(lines, "  "+m.clip(status, width-2))
 	}
 
-	current := slices.IndexFunc(rows, func(t ticket) bool { return t.ID == m.selected })
-	offset := max(0, current-m.bodyHeight()+2)
-	for _, row := range rows[offset:] {
+	for _, row := range m.visibleQueueRows(rows) {
 		tone := m.palette.text
 		if row.Status == "Blocked" {
 			tone = m.palette.warning
@@ -291,6 +308,12 @@ func (m model) queueLines(width int) []string {
 		lines = append(lines, m.fill(marker+label+strings.Repeat(" ", gap)+state, width, background, tone, row.ID == m.selected))
 	}
 	return lines
+}
+
+func (m model) visibleQueueRows(rows []ticket) []ticket {
+	current := slices.IndexFunc(rows, func(t ticket) bool { return t.ID == m.selected })
+	offset := max(0, current-m.bodyHeight()+2)
+	return rows[offset:min(len(rows), offset+m.bodyHeight()-1)]
 }
 
 func (m model) selectedTicket() (ticket, bool) {

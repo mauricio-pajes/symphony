@@ -51,18 +51,25 @@ try {
   }
 
   if (settings.sort_by_stock) {
-    const label = document.createElement("label");
-    label.htmlFor = "stock-order";
-    label.textContent = "Sort by";
-    const order = document.createElement("select");
-    order.id = "stock-order";
-    order.add(new Option("Catalog order", "catalog"));
-    order.add(new Option("Lowest availability", "stock"));
-    order.addEventListener("change", () => {
-      sort = order.value;
-      render();
-    });
-    controls.append(label, order);
+    const order = document.createElement("fieldset");
+    const legend = document.createElement("legend");
+    legend.textContent = "Sort by";
+    order.append(legend);
+    for (const [value, name] of [["catalog", "Catalog order"], ["stock", "Lowest availability"]]) {
+      const label = document.createElement("label");
+      const option = document.createElement("input");
+      option.type = "radio";
+      option.name = "stock-order";
+      option.value = value;
+      option.checked = value === sort;
+      option.addEventListener("change", () => {
+        sort = option.value;
+        render();
+      });
+      label.append(option, name);
+      order.append(label);
+    }
+    controls.append(order);
   }
 
   render();
