@@ -120,6 +120,7 @@ defmodule SymphonyElixir.InternalDispatch do
   defp verification(%{status: status}, verify) when status in [:succeeded, :changes_requested], do: verify.()
   defp verification(_candidate, _verify), do: nil
 
+  defp disposition({:park, :human_review}), do: :review_pending
   defp disposition({:park, _reason}), do: :parked
   defp disposition(_next), do: :ready
 end

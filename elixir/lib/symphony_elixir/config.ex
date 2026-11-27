@@ -116,8 +116,9 @@ defmodule SymphonyElixir.Config do
   @doc false
   @spec validate_settings(Schema.t()) :: :ok | {:error, term()}
   def validate_settings(settings) do
-    with :ok <- validate_tracker(settings.tracker) do
-      SymphonyElixir.AgentRouting.validate_settings(settings)
+    with :ok <- validate_tracker(settings.tracker),
+         :ok <- SymphonyElixir.AgentRouting.validate_settings(settings) do
+      SymphonyElixir.InternalPilot.validate(settings)
     end
   end
 

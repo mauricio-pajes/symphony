@@ -192,6 +192,61 @@ The [Personal Symphony design](../docs/personal-symphony-design.md) describes th
 workflow, centralized effects and terminal client. This example documents the current tracker-driven
 routing mode.
 
+### Synthetic Linear-to-Human-Review pilot
+
+Use a separate workflow and workspace root for a single synthetic test issue.
+Start the daemon with the exact issue and review-state UUIDs, a trusted local
+Docker socket, a pinned image and a private state directory outside the
+workspace root. Both directories must exist, and the state directory must be
+private. Run one daemon per state directory. Changes to the pilot scope require
+a restart and settlement of any unresolved lease under the original scope.
+
+```yaml
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  project_slug: your-personal-test-project-slug
+  active_states: [Todo]
+  terminal_states: [Done, Canceled]
+workspace:
+  root: /absolute/path/to/pilot/workspaces
+agent:
+  internal_pilot:
+    issue_id: "<Linear test issue UUID>"
+    human_review_state_id: "<Human Review state UUID on the same team>"
+    state_directory: /absolute/path/to/pilot/state
+    docker_socket: /absolute/path/to/docker.sock
+    image: "sha256:<local BusyBox image ID>"
+```
+
+Set the test issue description to the single line
+`https://jira.fixture.test/browse/PILOT-1` and put it in Todo or To Do.
+Start the daemon with this separate `WORKFLOW.md` as described in [Run](#run).
+The host will confirm project and team scope and resolve the Jira link with
+the local fixture. It verifies a synthetic response file after isolated
+planning, implementation, validation and review. The workers exercise selected
+profile names using fixture commands. The Linear credential stays on the host.
+The host records the review intent before sending one transition, then confirms
+the result with a fresh read. If the transition result is unknown, later polls
+recover only by observation.
+
+Use an authenticated Linear test project for a real ticket. To reproduce the
+fully local run with a simulated Linear GraphQL server, run from `elixir/`:
+
+```bash
+docker pull docker.io/library/busybox:1.37
+mix build
+python3 test/support/internal_linear_pilot.py \
+  --socket /absolute/path/to/docker.sock \
+  --image "$(docker image inspect busybox:1.37 --format '{{.Id}}')"
+```
+
+The fixture checks the daemon's HTTP API, observes the simulated Linear
+transition, and verifies no duplicate transition after restart. It also
+exercises a lost response before and after the update, a changed ticket,
+and daemon recovery with an attached worker.
+See the [pilot integration ADR](../docs/adr-0007-synthetic-linear-pilot.md).
+
 ### Isolated internal phase fixture
 
 The opt-in test routes a synthetic item through planning, implementation,

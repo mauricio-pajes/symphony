@@ -31,6 +31,8 @@ defmodule SymphonyElixir.MixProject do
           # Covered by the opt-in fixture against a real Docker Engine.
           SymphonyElixir.InternalContainerWorker,
           SymphonyElixir.InternalDispatch,
+          SymphonyElixir.InternalPilot,
+          SymphonyElixir.Linear.InternalPilot,
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.LogFile,
           SymphonyElixir.Workspace,

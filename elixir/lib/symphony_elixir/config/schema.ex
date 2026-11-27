@@ -156,6 +156,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:providers_by_state, :map, default: %{})
       field(:classify_scope_states, {:array, :string}, default: [])
       field(:jira_intake, :map)
+      field(:internal_pilot, :map)
       field(:headless_max_duration_ms, :integer)
       field(:claude_command, {:array, :string}, default: ["claude", "-p", "--verbose", "--output-format", "stream-json"])
       field(:gemini_command, {:array, :string}, default: ["agy", "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox", "--model", "gemini-4-neon-high"])
@@ -175,6 +176,7 @@ defmodule SymphonyElixir.Config.Schema do
           :providers_by_state,
           :classify_scope_states,
           :jira_intake,
+          :internal_pilot,
           :headless_max_duration_ms,
           :claude_command,
           :gemini_command,

@@ -5,7 +5,8 @@ work instead of supervising coding agents.
 
 This fork can also [read Jira links from a personal Linear queue and route phases to different agents](elixir/README.md#personal-linear-queue-with-jira-intake-and-multiple-agents).
 The independent [terminal console](tui/README.md) reads the running daemon's queue and session snapshots.
-The [isolated local fixture](elixir/README.md#isolated-internal-phase-fixture) exercises routed phase handoffs and workspace recovery.
+The [synthetic Linear-to-Human-Review pilot](elixir/README.md#synthetic-linear-to-human-review-pilot) exercises the daemon and its isolated internal phases.
+The [container fixture](elixir/README.md#isolated-internal-phase-fixture) covers workspace recovery.
 
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)
 

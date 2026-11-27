@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, InternalPilot, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -33,6 +33,7 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      :internal_pilot,
       task_supervisor: SymphonyElixir.TaskSupervisor,
       running: %{},
       completed: MapSet.new(),
@@ -53,31 +54,37 @@ defmodule SymphonyElixir.Orchestrator do
 
   @impl true
   def init(opts) do
-    case Config.settings() do
-      {:ok, config} ->
-        now_ms = System.monotonic_time(:millisecond)
+    with {:ok, config} <- Config.settings(),
+         {:ok, pilot} <- InternalPilot.open(config) do
+      now_ms = System.monotonic_time(:millisecond)
 
-        state = %State{
-          poll_interval_ms: config.polling.interval_ms,
-          max_concurrent_agents: config.agent.max_concurrent_agents,
-          next_poll_due_at_ms: now_ms,
-          poll_check_in_progress: false,
-          tick_timer_ref: nil,
-          tick_token: nil,
-          task_supervisor: Keyword.get(opts, :task_supervisor, SymphonyElixir.TaskSupervisor),
-          codex_totals: @empty_codex_totals,
-          codex_rate_limits: nil
-        }
+      state = %State{
+        poll_interval_ms: config.polling.interval_ms,
+        max_concurrent_agents: config.agent.max_concurrent_agents,
+        next_poll_due_at_ms: now_ms,
+        poll_check_in_progress: false,
+        tick_timer_ref: nil,
+        tick_token: nil,
+        internal_pilot: pilot,
+        task_supervisor: Keyword.get(opts, :task_supervisor, SymphonyElixir.TaskSupervisor),
+        codex_totals: @empty_codex_totals,
+        codex_rate_limits: nil
+      }
 
-        run_terminal_workspace_cleanup()
-        state = schedule_tick(state, 0)
-
-        {:ok, state}
-
-      {:error, reason} ->
-        {:stop, reason}
+      if pilot, do: Process.flag(:trap_exit, true), else: run_terminal_workspace_cleanup()
+      {:ok, schedule_tick(state, 0)}
+    else
+      {:error, reason} -> {:stop, reason}
     end
   end
+
+  @impl true
+  def terminate(_reason, %State{internal_pilot: %InternalPilot{} = pilot}) do
+    _pilot = InternalPilot.stop(pilot, :pilot_daemon_stopped)
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
 
   @impl true
   def handle_info({:tick, tick_token}, %{tick_token: tick_token} = state)
@@ -123,6 +130,19 @@ defmodule SymphonyElixir.Orchestrator do
 
     notify_dashboard()
     {:noreply, state}
+  end
+
+  def handle_info({ref, result}, %State{internal_pilot: %InternalPilot{} = pilot} = state)
+      when is_reference(ref) do
+    updated = InternalPilot.worker_result(pilot, ref, result, Config.settings!())
+    notify_dashboard()
+    {:noreply, put_internal_pilot(state, updated)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %State{internal_pilot: %InternalPilot{} = pilot} = state) do
+    updated = InternalPilot.worker_down(pilot, ref)
+    notify_dashboard()
+    {:noreply, put_internal_pilot(state, updated)}
   end
 
   def handle_info(
@@ -254,6 +274,15 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path)
     })
+  end
+
+  defp put_internal_pilot(state, pilot) do
+    {running, blocked} = InternalPilot.rows(pilot)
+    %{state | internal_pilot: pilot, running: running, blocked: blocked}
+  end
+
+  defp maybe_dispatch(%State{internal_pilot: %InternalPilot{} = pilot} = state) do
+    put_internal_pilot(state, InternalPilot.poll(pilot, Config.settings!(), state.task_supervisor))
   end
 
   defp maybe_dispatch(%State{} = state) do
@@ -942,6 +971,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
+    if Config.settings!().agent.internal_pilot do
+      state
+    else
+      dispatch_legacy_issue(state, issue, attempt, preferred_worker_host)
+    end
+  end
+
+  defp dispatch_legacy_issue(%State{} = state, issue, attempt, preferred_worker_host) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do

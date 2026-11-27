@@ -122,6 +122,20 @@ defmodule SymphonyElixir.InternalAdmissionTest do
     assert :ok = InternalAdmission.reserve(held, @scope, {"run-a", "boot-c", 1})
   end
 
+  test "keeps a waiting Human Review projection durable and never re-arms it", paths do
+    journal = admitted(paths)
+    assert :ok = InternalAdmission.reserve(journal, @scope, @old_attempt)
+    assert :ok = InternalAdmission.finish(journal, @scope, @old_attempt, :process_tree_absence_verified, :review_pending)
+    assert {:ok, reopened} = InternalAdmission.open(paths.state, paths.workspace, "boot-b")
+    assert {:ok, %{status: :review_pending, lease: nil}} = InternalAdmission.lookup(reopened, @scope)
+    assert {:error, :not_dispatchable} = InternalAdmission.reserve(reopened, @scope, @new_attempt)
+    assert {:error, :human_review_required} = InternalAdmission.resume(reopened, @scope, {"run-a", 1})
+    assert {:error, :invalid_review_confirmation} = InternalAdmission.confirm_review(reopened, @scope, {"run-a", 2})
+    assert :ok = InternalAdmission.confirm_review(reopened, @scope, {"run-a", 1})
+    assert {:ok, %{status: :human_review}} = InternalAdmission.lookup(reopened, @scope)
+    assert {:error, :human_review_required} = InternalAdmission.resume(reopened, @scope, {"run-a", 1})
+  end
+
   test "allows prefix siblings and rejects overlapping roots, state symlinks, relative paths, and public directories", paths do
     _journal = initialize(paths)
     assert {:error, :invalid_state_directory} = InternalAdmission.open(paths.state, paths.state, "boot-b")

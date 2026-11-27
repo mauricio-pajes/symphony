@@ -110,7 +110,7 @@ defmodule SymphonyElixir.InternalContainerWorkerTest do
              end)
 
     assert {:ok, next_boot} = InternalAdmission.open(fixture.state, fixture.workspace_root, "boot-b")
-    assert {:ok, %{status: :parked, generation: 4, lease: nil}} = InternalAdmission.lookup(next_boot, @scope)
+    assert {:ok, %{status: :review_pending, generation: 4, lease: nil}} = InternalAdmission.lookup(next_boot, @scope)
     assert {:error, :not_dispatchable} = InternalAdmission.reserve(next_boot, @scope, {"run-1", "boot-b", 5})
   end
 

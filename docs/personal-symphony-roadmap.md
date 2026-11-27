@@ -15,9 +15,9 @@ Design revision 2 · Approved for incremental implementation · November 26, 202
 | 6. Rich console, more profiles and selective adaptation | Add versioned events, history, authorized operations, verified assets and event-driven motion. Expand profiles and routing policies when justified by observed demand. | Verify cursor replay, permission checks, profile separation, rollback, rate-limit handling and UI controls. A lack of supporting evidence keeps the affected feature on its prior policy. |
 
 The deterministic policy, internal phases and durable launch boundary have
-been exercised with a local container fixture. Stage 2 activation still
-requires production scheduling and authenticated provider adapters that
-emit lease-bound outcomes. Add full checkpoint and effect recovery in stage
+been exercised through the daemon on one selected synthetic Linear issue.
+Stage 2 activation for general project work still requires authenticated
+provider adapters and automatic admission policies. Add full checkpoint and effect recovery in stage
 3. Allow additional graph behavior and parallel work when the pilot identifies a repeatable
 need. Measure the public snapshot load before adding push transport.
 
@@ -51,11 +51,17 @@ descendant does not write after timeout. The current production runner
 discards headless results before deciding continuation, and the legacy
 successful-exit path can revisit an unchanged active ticket. The isolated path verifies bounded, versioned terminal proposals against
 the current lease, drains it and applies independently verified evidence.
-Provider adapters and the tracker scheduler still need to adopt that path.
+The opt-in daemon pilot adopts that path for one synthetic issue.
+Authenticated provider adapters and general admission remain pending.
 A macOS fixture demonstrated the restart case: a background child wrote after
 the BEAM running its headless parent was forcibly terminated. The local
 container lease now demonstrates the required separation and verified drain.
 See the [container lease decision](adr-0006-local-container-leases.md).
+
+The [synthetic Linear pilot](adr-0007-synthetic-linear-pilot.md) recorded
+Human Review from the built daemon against a local Linear GraphQL fixture.
+It verified persisted acknowledgement, uncertain transition recovery by
+observation, and cancellation after the source issue changed.
 
 ## Comparison with a Codex-only workflow
 

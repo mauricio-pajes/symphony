@@ -20,7 +20,13 @@ defmodule SymphonyElixir.InternalAdmission do
   @max_records 512
   @max_bytes 1_048_576
   @max_generation 9_007_199_254_740_991
-  @statuses %{ready: "ready", parked: "parked", completed: "completed"}
+  @statuses %{
+    ready: "ready",
+    parked: "parked",
+    review_pending: "review_pending",
+    human_review: "human_review",
+    completed: "completed"
+  }
 
   @enforce_keys [:root, :root_identity, :owner, :uid, :boot_id]
   defstruct @enforce_keys
@@ -29,7 +35,7 @@ defmodule SymphonyElixir.InternalAdmission do
   @type binding :: {run_id :: String.t(), generation :: non_neg_integer()}
   @type attempt_id :: {run_id :: String.t(), boot_id :: String.t(), generation :: pos_integer()}
   @type lease :: %{boot_id: String.t(), generation: pos_integer(), process_identity: String.t() | nil}
-  @type disposition :: :ready | :parked | :completed
+  @type disposition :: :ready | :parked | :review_pending | :human_review | :completed
   @type record :: %{
           project_id: String.t(),
           issue_id: String.t(),
@@ -127,6 +133,18 @@ defmodule SymphonyElixir.InternalAdmission do
   @spec finish(t(), scope(), attempt_id(), proof(), disposition()) :: :ok | {:error, term()}
   def finish(journal, scope, attempt_id, proof, disposition) when is_map_key(@statuses, disposition) do
     update(journal, scope, &finish_record(&1, attempt_id, proof, disposition))
+  end
+
+  @doc "Records a host observation of Human Review for the matching projected milestone."
+  @spec confirm_review(t(), scope(), binding()) :: :ok | {:error, term()}
+  def confirm_review(journal, scope, {run_id, generation}) do
+    update(journal, scope, fn
+      %{run_id: ^run_id, generation: ^generation, status: :review_pending, lease: nil} = record ->
+        {:ok, %{record | status: :human_review}}
+
+      _mismatch ->
+        {:error, :invalid_review_confirmation}
+    end)
   end
 
   @doc "Records an explicit park or completion for an inactive admission."
@@ -308,6 +326,10 @@ defmodule SymphonyElixir.InternalAdmission do
 
   defp require_inactive(%{lease: %{}}, _binding), do: {:error, :lease_unresolved}
   defp require_inactive(%{status: :completed}, _binding), do: {:error, :already_completed}
+
+  defp require_inactive(%{status: status}, _binding) when status in [:review_pending, :human_review],
+    do: {:error, :human_review_required}
+
   defp require_inactive(%{run_id: run_id, generation: gen}, {run_id, gen}), do: :ok
   defp require_inactive(_record, _binding), do: {:error, :stale_admission}
 
