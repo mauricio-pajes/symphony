@@ -20,6 +20,7 @@ polling:
 workspace:
   root: ~/code/symphony-workspaces
 hooks:
+  # Optional: use after_success for a required host-side review gate.
   after_create: |
     git clone --depth 1 https://github.com/openai/symphony .
     if command -v mise >/dev/null 2>&1; then
@@ -28,8 +29,16 @@ hooks:
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
 agent:
+  # Disable tracker_tools_enabled when a trusted hook owns tracker writes.
   max_concurrent_agents: 10
   max_turns: 20
+  # Configure internal_pilot in a separate workflow for a single synthetic issue.
+  # Set internal_pilot.implementation to codex to enable the authenticated PILOT-2 fixture.
+  # Use multi_agent with the PILOT-3 fixture for Gemini, Codex and Claude Code.
+  # Use api_demo with PILOT-4 and a trusted, absolute demo_runner path for the Stockroom example.
+  # Use queue with the Bruno and frontend runners to admit the three Stockroom fixtures from Todo.
+  # In queue mode, set in_progress_state_id to the team's In Progress UUID to claim issues in Linear.
+  # See README.md#synthetic-linear-to-human-review-pilot.
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
   approval_policy: never
@@ -47,7 +56,7 @@ Follow-up context:
 - This is follow-up attempt #{{ attempt }}. It may be a normal continuation or a retry after a failure.
 - Resume from the current workspace state instead of restarting from scratch.
 - Do not repeat already-completed investigation or validation unless needed for new code changes.
-- Do not end the turn while the work item remains in an active state unless you are blocked by missing required access.
+- Continue while the work item is active. If a blocker or approval requires a pause, follow the configured hold flow.
   {% endif %}
 
 Issue context:
@@ -66,11 +75,11 @@ No description provided.
 
 Instructions:
 
-1. This is an unattended orchestration session. Do not ask a human to perform follow-up actions.
-2. Only stop early for a true external blocker (missing required tools, auth, permissions, or secrets). If blocked, record it in the workpad and move the issue according to the workflow.
+1. This is an unattended orchestration session. Use the configured human approval step when the target workflow requires it.
+2. Only stop early for a true external blocker, such as missing access or a required decision from the ticket owner. Record the blocker in the workpad and follow the configured hold or review flow.
 3. Final message must report completed actions and blockers only. Do not include "next steps for user".
 
-Work only in the provided repository copy. Do not touch any other path.
+Keep repository writes inside the issue workspace. Use authorized tracker and demo applications and the target workflow's approved evidence location.
 
 ## Prerequisite: Linear MCP or `linear_graphql` tool is available
 
@@ -115,6 +124,35 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - `Rework` -> reviewer requested changes; planning + implementation required.
 - `Done` -> terminal state; no further action required.
 
+## Intake from a personal Linear queue
+
+When `agent.jira_intake` is configured, the linked Jira issue is included in the initial agent prompt.
+When `agent.providers_by_state` is configured, follow the workflow's phase-specific completion rules and
+record the workpad before transitioning to the next active phase. Symphony starts that phase with its
+configured agent. The bundled sample still uses its standard Todo and In Progress flow.
+The optional `agent.headless_max_duration_ms` field bounds each headless provider invocation
+even when the provider keeps emitting updates. It defaults to `codex.turn_timeout_ms`.
+
+For a Blaze ticket queued with a link to Jira, use Linear to track the run and use the linked Jira
+issue as the source of the requirements. A link on its own is enough to start intake. Open the issue
+on the configured Jira site using the authorized Jira connection. Read its description, acceptance
+criteria, relevant comments and linked decisions. Preserve the Jira requirements, identify material
+gaps, and add a way to verify each criterion before implementation. In the Linear workpad, turn that
+analysis into a short outline of the scope, acceptance checkboxes, and a step-by-step plan. Keep each
+acceptance item open until its verification is recorded.
+
+Confirm which service and approved repositories own the change. If the workflow precloned a
+repository, verify it matches the ticket before editing. If the workflow starts with an empty
+workspace and supplies a repository catalog, clone the matching configured repositories inside that
+workspace. Read the target repositories' instructions before planning changes. Treat unavailable Jira
+access, an unresolved repository or conflicting requirements as an intake blocker. Record the Jira
+link and a concise progress summary in Linear. Follow the target workflow's approval rules for
+updates to Jira and shared artifacts.
+
+For personal and university tickets without a linked Blaze Jira issue, use the Linear ticket and the
+configured repository's own instructions. Keep each ticket's credentials and context within its
+project scope.
+
 ## Step 0: Determine current ticket state and route
 
 1. Fetch the issue by explicit ticket ID.
@@ -134,7 +172,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 5. For `Todo` tickets, do startup sequencing in this exact order:
    - `update_issue(..., state: "In Progress")`
    - find/create `## Codex Workpad` bootstrap comment
-   - only then begin analysis/planning/implementation work.
+   - only then begin intake and analysis, before planning and implementation.
 6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
 
 ## Step 1: Start/continue execution (Todo or In Progress)
@@ -157,6 +195,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
     - Do not include metadata already inferable from Linear issue fields (`issue ID`, `status`, `branch`, `PR link`).
 6.  Add explicit acceptance criteria and TODOs in checklist form in the same comment.
     - If changes are user-facing, include a UI walkthrough acceptance criterion that describes the end-to-end user path to validate.
+    - For observable API or product changes, plan the recorded demo under `Demo evidence` and map the scenario to the acceptance criteria it proves.
     - If changes touch app files or app behavior, add explicit app-specific flow checks to `Acceptance Criteria` in the workpad (for example: launch path, changed interaction path, and expected result path).
     - If the ticket description/comment context includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections as required checkboxes (no optional downgrade).
 7.  Run a principal-style self-review of the plan and refine it in the comment.
@@ -196,6 +235,45 @@ Use this only when completion is blocked by missing required tools or missing au
   - exact human action needed to unblock.
 - Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
 
+## Demo evidence
+
+For an observable product or API change, record the scenario in the real application or API client against
+the build that contains the change. Use staging when it is ready and authorized, or a real local
+environment that can prove the criterion. Follow the target repository's demo and publication rules.
+
+- **Product UI:** If the actual product UI (for example, BIO UI, Retail UI, or POS) can demonstrate the
+  change, show the user's normal entry point, action, and visible result. If the UI triggers the
+  change but only an API field proves it, use the API client for that proof.
+- **Hoppscotch:** For API-only Payment Service and ECOM backend demos, use the existing service
+  workspace, collection, and authorized environment. For other services with a documented
+  Hoppscotch collection, use that collection. Find the saved request by HTTP method and normalized
+  route and run it in place. Use the same request for payload or response changes and multiple demo
+  cases. Keep case-specific values out of saved defaults. If the shared API contract changes, update
+  the existing definition or examples in place as needed and when authorized. For a new endpoint,
+  prepare the request in the client and save it to the shared collection only after any required
+  approval. Use the appropriate resource folder and follow the neighboring names, variables,
+  inherited auth, and examples. Keep ticket-specific names and duplicate requests out of the
+  collection.
+- **Bruno:** For API-only Platform demos and other services without endpoints documented in
+  Hoppscotch, use Bruno with the service's established collection and environment where available.
+  Export the cURL for the demonstrated request. Preserve its method, route, query, and body shape, and
+  replace credentials or sensitive fixture values with environment references or placeholders.
+
+Use one visible cursor at a natural pace. In an API demo, keep the method, route, relevant inputs,
+actual send, HTTP status, and original JSON readable in the client. Scroll the native response at fixed
+zoom and pause on the changed field. Show the before and after for a persistent change when needed to
+prove it. Use safe fixtures and keep credentials out of the take. Use the real UI or the selected API
+client as the source of the demonstration and response. Verify the exported video against the scenario
+after recording.
+
+Before the `Human Review` transition, include the video, environment, observed result and reproduction
+aid in the existing workpad or ticket attachments. For Hoppscotch, verify the internal collection link
+and identify the request, linking directly to it when supported. Use organization-wide access within the
+workspace when authorized. For Bruno, include the sanitized cURL as text or as an attachment. Keep Blaze
+evidence in approved internal locations and use permitted references in the personal Linear ticket.
+If client, recording or link access is unavailable, follow the blocked-access procedure and identify
+the missing evidence explicitly.
+
 ## Step 2: Execution phase (Todo -> In Progress -> Human Review)
 
 1.  Determine current repo state (`branch`, `git status`, `HEAD`) and verify the kickoff `pull` sync result is already recorded in the workpad before implementation continues.
@@ -212,11 +290,15 @@ Use this only when completion is blocked by missing required tools or missing au
 5.  Run validation/tests required for the scope.
     - Mandatory gate: execute all ticket-provided `Validation`/`Test Plan`/ `Testing` requirements when present; treat unmet items as incomplete work.
     - Prefer a targeted proof that directly demonstrates the behavior you changed.
-    - You may make temporary local proof edits to validate assumptions (for example: tweak a local build input for `make`, or hardcode a UI account / response path) when this increases confidence.
+    - You may make temporary local proof edits to validate assumptions (for example, tweak a local build input for `make`) when this increases confidence. Use the actual changed behavior and response for demo recordings.
     - Revert every temporary proof edit before commit/push.
     - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
-    - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
-6.  Re-check all acceptance criteria and close any gaps.
+    - If app-touching, run the repository's app runtime validation and apply `Demo evidence` to the changed behavior. Use `launch-app` and `github-pr-media` where the repository provides them and publication is authorized.
+    - If API behavior changes, apply `Demo evidence` even when the UI does not expose the change.
+6.  Re-check all acceptance criteria and close any gaps. If the target workflow requires
+    pre-publication approval (including Blaze), prepare the review package locally. Use the
+    configured approval hold outside the active dispatch states while waiting. Obtain approval
+    before pushing, publishing, or moving the ticket to review.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
@@ -224,6 +306,7 @@ Use this only when completion is blocked by missing required tools or missing au
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
     - Add final handoff notes (commit + validation summary) in the same workpad comment.
+    - Add or refresh the verified demo and required Hoppscotch link or Bruno cURL when applicable. Re-record when later changes invalidate the demonstrated behavior.
     - Do not include PR URL in the workpad comment; keep PR linkage on the issue via attachment/link fields.
     - Add a short `### Confusions` section at the bottom when any part of task execution was unclear/confusing, with concise bullets.
     - Do not post any additional completion summary comment.
@@ -254,8 +337,8 @@ Use this only when completion is blocked by missing required tools or missing au
 
 1. Treat `Rework` as a full approach reset, not incremental patching.
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
-3. Close the existing PR tied to the issue.
-4. Remove the existing `## Codex Workpad` comment from the issue.
+3. Close the existing PR tied to the issue once authorized under the target workflow.
+4. Remove the existing `## Codex Workpad` comment from the issue. Retain the demo assets and carry forward any still-valid reproduction links or commands into the replacement workpad.
 5. Create a fresh branch from `origin/main`.
 6. Start over from the normal kickoff flow:
    - If current issue state is `Todo`, move it to `In Progress`; otherwise keep the current state.
@@ -270,7 +353,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - PR feedback sweep is complete and no actionable comments remain.
 - PR checks are green, branch is pushed, and PR is linked on the issue.
 - Required PR metadata is present (`symphony` label).
-- If app-touching, runtime validation/media requirements from `App runtime validation (required)` are complete.
+- If app-touching, app runtime validation is complete. For observable product or API changes, the verified recording and required reproduction aid from `Demo evidence` are on the ticket.
 
 ## Guardrails
 

@@ -118,8 +118,295 @@ Optional flags:
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
 - `--port` also starts the Phoenix observability service (default: disabled)
 
+The [terminal console](../tui/README.md) connects to the enabled observability service on loopback.
+The snapshot and issue endpoints include a `provider` field when adapter activity identifies
+the worker. The terminal client can also read earlier servers where this field is absent.
+
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
 Codex session prompt.
+
+The bundled workflow's [demo evidence rules](WORKFLOW.md#demo-evidence) cover recorded product and
+API changes. Configure the project to use its real UI or its authorized native API client. Review
+handoff includes the verified video and a permitted request link or sanitized cURL. A live demo
+requires access to the real client, target environment, and recording tools from the execution host.
+
+The [personal queue intake rules](WORKFLOW.md#intake-from-a-personal-linear-queue) let a Linear ticket
+reference a Jira issue as its source of requirements. Configure the Linear scope, Jira access, and
+authorized repositories before running this workflow. The bundled front matter still targets Symphony's
+example project. For a queue scoped to one repository, set `hooks.after_create` to clone that repository.
+For Jira links that can point to several repositories, start with an empty issue workspace and provide a
+repository catalog in the prompt so the agent can select and clone the target after reading Jira. If
+the project requires approval before publication, configure its approval hold outside the active
+dispatch states.
+
+### Personal Linear queue with Jira intake and multiple agents
+
+Enable these settings in your own workflow. Use the actual state names from the Linear project.
+Keep the human approval states out of `active_states` so they pause execution.
+
+```yaml
+tracker:
+  kind: linear
+  provider:
+    project_slug: your-personal-project-slug
+  active_states: [Todo, Planning, In Progress, Agent Review]
+  terminal_states: [Done, Canceled]
+agent:
+  jira_intake:
+    base_url: $JIRA_BASE_URL
+    email: $JIRA_EMAIL
+    api_token: $JIRA_API_TOKEN
+  providers_by_state:
+    Todo: codex
+    Planning: gemini
+    In Progress: codex
+    Agent Review: claude
+  classify_scope_states: [Todo]
+codex:
+  approval_policy: on-request
+```
+
+- Paste a Jira `/browse/KEY` URL in the Linear description. Symphony fetches the issue, its visible
+  comments and linked issue keys from the configured Jira site with a read-only request. It adds this
+  context to the agent prompt while keeping Linear as the tracker. You can set `jira_intake.project_key`
+  to limit intake to one Jira project. Tickets without a matching link use their Linear description.
+- A state uses its configured provider and defaults to Codex when unmapped. In `classify_scope_states`,
+  Symphony runs the read-only Codex classifier when the description lacks explicit acceptance criteria
+  or the ticket has `scope-unclear`. It may choose another configured provider for that attempt. After
+  an agent advances Linear to a different routed phase, Symphony starts a new session in the same workspace.
+- Write the completion criteria and next Linear state for each active phase in the workflow prompt.
+  Codex gets Symphony's tracker tools. Claude Code and Gemini run as local CLIs and need their own
+  authorized Linear connection if their phase updates the workpad or transitions the ticket. Have each
+  phase record its findings or changes before advancing so the next agent can resume from the workspace
+  and workpad. Set their tool permissions for the project before enabling a route.
+- Install and authenticate `claude` and `agy` on the worker. `agy` uses Gemini 4 Neon High by default.
+  Override `agent.claude_command`, `agent.gemini_command`, or `agent.classifier_command` with an argv
+  list to pin a different model or CLI installation. Use the same streaming output format when
+  overriding a command. The classifier and the extra providers currently require a local worker.
+- Prefer the current standalone `agy` from the [official CLI installer](https://antigravity.google/docs/cli/tutorial/).
+  If the binary is outside the worker's `PATH`, set the first entry in `agent.gemini_command` to
+  its absolute path and retain the streaming arguments. Use that binary's `models` command and
+  verify its effective account before enabling the route.
+
+The [Personal Symphony design](../docs/personal-symphony-design.md) describes the proposed internal
+workflow, centralized effects and terminal client. This example documents the current tracker-driven
+routing mode.
+
+Set `agent.tracker_tools_enabled: false` when trusted host hooks own tracker
+effects. Codex receives no tracker tool, and Symphony rejects its tracker
+tool calls. Scheduler reads and credential stripping still work.
+
+Use `hooks.after_success` to validate a completed agent's handoff before
+publishing it. This hook runs in the workspace after the provider returns
+success. A nonzero exit or timeout fails the attempt and follows normal retry
+handling. The existing `hooks.after_run` still runs for cleanup regardless of
+the outcome. The hook is responsible for validating the requested handoff and
+making its effects safe to retry. A retry includes the provider attempt while
+the issue is still eligible. See [the review gate ADR](../docs/adr-0011-private-demo-review-gate.md)
+for the private upload and inline video protocol.
+
+### Synthetic Linear-to-Human-Review pilot
+
+Use a separate workflow and workspace root for a single synthetic test issue.
+Start the daemon with the exact issue and review-state UUIDs, a trusted local
+Docker socket, a pinned image and a private state directory outside the
+workspace root. Both directories must exist, and the state directory must be
+private. Run one daemon per state directory. Changes to the pilot scope require
+a restart and settlement of any unresolved lease under the original scope.
+
+```yaml
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  project_slug: your-personal-test-project-slug
+  active_states: [Todo]
+  terminal_states: [Done, Canceled]
+workspace:
+  root: /absolute/path/to/pilot/workspaces
+agent:
+  internal_pilot:
+    issue_id: "<Linear test issue UUID>"
+    human_review_state_id: "<Human Review state UUID on the same team>"
+    state_directory: /absolute/path/to/pilot/state
+    docker_socket: /absolute/path/to/docker.sock
+    image: "sha256:<local BusyBox image ID>"
+```
+
+Set the test issue description to the single line
+`https://jira.fixture.test/browse/PILOT-1` and put it in Todo or To Do.
+The pilot also accepts the Markdown form that Linear returns for that URL.
+Start the daemon with this separate `WORKFLOW.md` as described in [Run](#run).
+The host will confirm project and team scope and resolve the Jira link with
+the local fixture. It verifies a synthetic response file after isolated
+planning, implementation, validation and review. The workers exercise selected
+profile names using fixture commands. The Linear credential stays on the host.
+The host records the review intent before sending one transition, then confirms
+the result with a fresh read. If the transition result is unknown, later polls
+recover only by observation.
+
+Use an authenticated Linear test project for a real ticket. To reproduce the
+fully local run with a simulated Linear GraphQL server, run from `elixir/`:
+
+```bash
+docker pull docker.io/library/busybox:1.37
+mix build
+python3 test/support/internal_linear_pilot.py \
+  --socket /absolute/path/to/docker.sock \
+  --image "$(docker image inspect busybox:1.37 --format '{{.Id}}')"
+```
+
+The fixture checks the daemon's HTTP API, observes the simulated Linear
+transition, and verifies no duplicate transition after restart. It also
+exercises a lost response before and after the update, a changed ticket,
+and daemon recovery with an attached worker. Its Codex case substitutes
+a local CLI stub, checks that the tracker credential stays off the provider
+process, and compares the inline Linear diff with the Git working tree.
+See the [pilot integration ADR](../docs/adr-0007-synthetic-linear-pilot.md).
+
+#### Authenticated Codex pilot
+
+For the version-label test, add `implementation: codex` under
+`agent.internal_pilot` and use `https://jira.fixture.test/browse/PILOT-2`
+as the Linear test issue description. Start with a fresh issue UUID and
+private pilot directories. The host needs Git and a `codex` CLI on `PATH`
+with an existing login. Symphony initializes a local Git repository for
+the test and keeps the resulting diff in its pilot workspace.
+
+Codex receives the synthetic requirements, baseline and fixed checks in a
+tool-disabled session. The offline worker applies the bounded proposal and
+runs the four checks against the resulting working tree. The daemon checks
+the diff across the implementation and validation phases. On success it
+adds the inline diff, its SHA-256 and test results to the ticket in the same
+Linear update that moves it to Human Review. Use the [Codex pilot ADR](../docs/adr-0008-personal-codex-pilot.md)
+for the execution boundary and restart behavior.
+
+#### Authenticated multi-agent pilot
+
+Set `implementation: multi_agent` under `agent.internal_pilot` and put
+`https://jira.fixture.test/browse/PILOT-3` on a fresh scoped Linear test
+issue. Use the same private Docker and workspace configuration. This mode
+needs authenticated `agy`, `codex` and `claude` CLIs on the daemon's `PATH`.
+
+Gemini 4 Neon Low produces a structured plan for the simulated requirements.
+Codex receives the plan with the requirements and test fixture and proposes
+the change. After offline validation, Claude Code reviews a snapshot of the
+exact diff. The daemon only projects Human Review after approval and a
+post-review check of that revision. The one Linear update includes the
+plan, review, diff and four test results. Changes requested by Claude park
+the pilot in Todo for inspection.
+
+The local integration fixture verifies the handoffs and both review verdicts
+using CLI stubs. See the [multi-agent pilot ADR](../docs/adr-0009-personal-multi-agent-pilot.md)
+for the provider boundary and the verified live run.
+
+#### Stockroom API and Bruno pilot
+
+Use `https://jira.fixture.test/browse/PILOT-4` as the description of a fresh,
+scoped Linear test issue. The daemon seeds a standalone [Stockroom inventory
+project](priv/pilot/inventory/README.md) and adds a GET availability contract
+while preserving the catalog. Use the same three authenticated provider CLIs.
+Configure `agent.internal_pilot` as in the previous example, with these changes:
+
+```yaml
+agent:
+  internal_pilot:
+    implementation: api_demo
+    image: "sha256:<local Python 3.12 Alpine image ID>"
+    demo_runner: /absolute/path/to/elixir/test/support/bruno_demo/run.py
+```
+
+The optional desktop executor requires macOS 15 or later on Apple Silicon,
+Bruno open in an English-language window, existing Accessibility and Screen
+Recording access, Xcode command-line tools, Git, Python 3.9 or later and
+FFmpeg. The sample uploader reads the previously configured
+`symphony-linear-personal-pilot` Keychain entry. Keep the Bruno window free
+while the daemon runs the demo. The local API binds only to port 8767 on
+loopback. The executor stores verified MP4s in `~/Downloads/Symphony-Stockroom-qa-evidence/`.
+
+After Claude approves the diff, Gemini chooses the order and focus of two
+short Bruno recordings. The executor verifies the real HTTP results and the
+captured status and body, uploads the clips privately, and returns links
+bound to the reviewed diff. Linear receives both videos, cURL commands,
+the checked test results and the review in the Human Review update. Failed
+recording or upload leaves the scoped ticket in Todo for inspection.
+
+For a local regression run, add `--api-image <local Python image ID>` to
+the fixture command above. The regression suite uses desktop stubs and
+checks the demonstration gate without touching Bruno or uploading anything.
+See the [Stockroom demo ADR](../docs/adr-0010-stockroom-api-demo.md).
+
+#### Continuous Stockroom queue
+
+Use `implementation: queue` in this pilot's `agent.internal_pilot` settings,
+omit `issue_id`, and pin the same project and Human Review state. Configure
+`demo_runner` with the Bruno executor and set `frontend_runner` to a trusted
+absolute launcher for `test/support/frontend_demo/run.py`. That executor
+uses Node.js, Playwright with its video dependency, Chrome, Python and
+FFmpeg. It reuses the private Linear asset uploader. The launcher can set
+`NODE_PATH` to the directory containing its installed `playwright` package.
+Set `queue_since` to an ISO 8601 timestamp when enabling an existing sandbox
+if older tickets should be kept out of the initial run.
+Set `in_progress_state_id` to the team's In Progress state UUID to show
+claimed tickets on the board. Linear must report that state as started
+and on the same team as Human Review.
+
+The daemon selects one eligible ticket at a time from the project's Todo
+state. Use exactly one simulated Jira link in the issue description:
+
+| Fixture | Work item | Demo client |
+| --- | --- | --- |
+| `https://jira.fixture.test/browse/PILOT-4` | Inventory availability endpoint | Native Bruno, with cURL in Linear |
+| `https://jira.fixture.test/browse/PILOT-5` | In-stock catalog filter | Browser walkthrough |
+| `https://jira.fixture.test/browse/PILOT-6` | Catalog sort by lowest availability | Browser walkthrough |
+
+Launch the daemon with a loopback observability port and point the [TUI](../tui/README.md)
+at that same address with `-url`. The daemon keeps polling when the TUI is
+closed. When `in_progress_state_id` is configured, the daemon reserves the
+issue and confirms the In Progress transition before planning starts.
+An uncertain transition is observed for up to twenty seconds without a
+second write. Without the setting, the queue stays in Todo during work.
+In both cases, Human Review receives the approved diff and demo evidence.
+The TUI shows the active provider, scheduled retries and recent outcomes.
+Retryable provider errors get two attempts on the same phase after short
+delays. The daemon
+checks the current issue source and the lease-free workspace before
+restarting the provider. Bruno retries request preparation once before
+capture. After an uncertain Human Review write, the daemon polls for
+matching evidence without repeating the write. Unresolved Docker leases
+must drain before new work starts after a restart. Recorded tickets
+stay out of new admission.
+
+See the [continuous queue ADR](../docs/adr-0011-continuous-stockroom-queue.md).
+
+### Isolated internal phase fixture
+
+The opt-in test routes a synthetic item through planning, implementation,
+validation and independent review while the same issue claim remains active.
+It binds each selected phase to a durable reservation, runs a shell command
+in an isolated local Docker container, and parks the item at Human Review.
+It also demonstrates a surviving container descendant after the worker
+BEAM exits and verifies recovery before the workspace can be reused.
+A separate case recovers a stopped container after a lost create
+acknowledgement. The worker's final stdout line must be a versioned JSON
+proposal such as `{"version":1,"status":"succeeded"}`. The host checks the
+lease and outcome before applying its independent verification.
+
+Run from `elixir/` with a trusted local Linux Docker Engine. Set its Unix
+socket path and the ID of an installed BusyBox image.
+
+```bash
+docker pull docker.io/library/busybox:1.37
+export SYMPHONY_TEST_DOCKER_SOCKET=/path/to/docker.sock
+export SYMPHONY_TEST_DOCKER_IMAGE="$(docker image inspect busybox:1.37 --format '{{.Id}}')"
+SYMPHONY_RUN_CONTAINER_TESTS=1 mix test test/symphony_elixir/internal_container_worker_test.exs
+```
+
+The fixture uses temporary workspace and journal directories. The container
+worker uses an existing image with no implicit volumes. The daemon's
+regular tracker dispatch remains in use for normal workflows. See the
+[local container lease ADR](../docs/adr-0006-local-container-leases.md).
+
+### Minimal workflow example
 
 Minimal example:
 
@@ -161,7 +448,10 @@ Notes:
   - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
 - `codex.turn_timeout_ms` is the maximum silence interval while a turn is streaming. Each
   app-server update resets it; it is not a total turn runtime cap.
-- Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
+- Supported `codex.approval_policy` values depend on the installed Codex App Server. Codex CLI
+  0.170.0 accepts `on-request` and the object-form `granular` policy. It rejects the older
+  `reject` object used by the bundled defaults. Use `on-request` in the personal workflow above
+  to let Symphony surface requests for approval as blockers.
 - Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
 - When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
   unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
@@ -173,6 +463,9 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
+- Routed headless providers use `codex.turn_timeout_ms` as the silence interval and default
+  elapsed-time cap. Set `agent.headless_max_duration_ms` to configure the elapsed limit separately.
+  Classifier invocations retain a cap of at most one minute.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch

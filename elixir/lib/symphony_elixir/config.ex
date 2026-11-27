@@ -116,12 +116,14 @@ defmodule SymphonyElixir.Config do
   @doc false
   @spec validate_settings(Schema.t()) :: :ok | {:error, term()}
   def validate_settings(settings) do
-    if is_nil(settings.tracker.kind) do
-      {:error, :missing_tracker_kind}
-    else
-      Tracker.validate_config(settings.tracker)
+    with :ok <- validate_tracker(settings.tracker),
+         :ok <- SymphonyElixir.AgentRouting.validate_settings(settings) do
+      SymphonyElixir.InternalPilot.validate(settings)
     end
   end
+
+  defp validate_tracker(%{kind: nil}), do: {:error, :missing_tracker_kind}
+  defp validate_tracker(tracker), do: Tracker.validate_config(tracker)
 
   defp format_config_error(reason) do
     case reason do

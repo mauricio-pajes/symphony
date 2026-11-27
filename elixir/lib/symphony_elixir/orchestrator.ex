@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, InternalPilot, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -33,6 +33,7 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      :internal_pilot,
       task_supervisor: SymphonyElixir.TaskSupervisor,
       running: %{},
       completed: MapSet.new(),
@@ -53,31 +54,37 @@ defmodule SymphonyElixir.Orchestrator do
 
   @impl true
   def init(opts) do
-    case Config.settings() do
-      {:ok, config} ->
-        now_ms = System.monotonic_time(:millisecond)
+    with {:ok, config} <- Config.settings(),
+         {:ok, pilot} <- InternalPilot.open(config) do
+      now_ms = System.monotonic_time(:millisecond)
 
-        state = %State{
-          poll_interval_ms: config.polling.interval_ms,
-          max_concurrent_agents: config.agent.max_concurrent_agents,
-          next_poll_due_at_ms: now_ms,
-          poll_check_in_progress: false,
-          tick_timer_ref: nil,
-          tick_token: nil,
-          task_supervisor: Keyword.get(opts, :task_supervisor, SymphonyElixir.TaskSupervisor),
-          codex_totals: @empty_codex_totals,
-          codex_rate_limits: nil
-        }
+      state = %State{
+        poll_interval_ms: config.polling.interval_ms,
+        max_concurrent_agents: config.agent.max_concurrent_agents,
+        next_poll_due_at_ms: now_ms,
+        poll_check_in_progress: false,
+        tick_timer_ref: nil,
+        tick_token: nil,
+        internal_pilot: pilot,
+        task_supervisor: Keyword.get(opts, :task_supervisor, SymphonyElixir.TaskSupervisor),
+        codex_totals: @empty_codex_totals,
+        codex_rate_limits: nil
+      }
 
-        run_terminal_workspace_cleanup()
-        state = schedule_tick(state, 0)
-
-        {:ok, state}
-
-      {:error, reason} ->
-        {:stop, reason}
+      if pilot, do: Process.flag(:trap_exit, true), else: run_terminal_workspace_cleanup()
+      {:ok, schedule_tick(state, 0)}
+    else
+      {:error, reason} -> {:stop, reason}
     end
   end
+
+  @impl true
+  def terminate(_reason, %State{internal_pilot: %InternalPilot{} = pilot}) do
+    _pilot = InternalPilot.stop(pilot, :pilot_daemon_stopped)
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
 
   @impl true
   def handle_info({:tick, tick_token}, %{tick_token: tick_token} = state)
@@ -125,6 +132,19 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
+  def handle_info({ref, result}, %State{internal_pilot: %InternalPilot{} = pilot} = state)
+      when is_reference(ref) do
+    updated = InternalPilot.worker_result(pilot, ref, result, Config.settings!())
+    notify_dashboard()
+    {:noreply, put_internal_pilot(state, updated)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %State{internal_pilot: %InternalPilot{} = pilot} = state) do
+    updated = InternalPilot.worker_down(pilot, ref)
+    notify_dashboard()
+    {:noreply, put_internal_pilot(state, updated)}
+  end
+
   def handle_info(
         {:DOWN, ref, :process, _pid, reason},
         %{running: running} = state
@@ -170,6 +190,9 @@ defmodule SymphonyElixir.Orchestrator do
       ) do
     case Map.get(running, issue_id) do
       nil ->
+        {:noreply, state}
+
+      %{pid: pid} when is_map_key(update, :worker_pid) and update.worker_pid != pid ->
         {:noreply, state}
 
       running_entry ->
@@ -251,6 +274,16 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path)
     })
+  end
+
+  defp put_internal_pilot(state, pilot) do
+    {running, blocked} = InternalPilot.rows(pilot)
+    retries = InternalPilot.retry_rows(pilot)
+    %{state | internal_pilot: pilot, running: running, blocked: blocked, retry_attempts: retries}
+  end
+
+  defp maybe_dispatch(%State{internal_pilot: %InternalPilot{} = pilot} = state) do
+    put_internal_pilot(state, InternalPilot.poll(pilot, Config.settings!(), state.task_supervisor))
   end
 
   defp maybe_dispatch(%State{} = state) do
@@ -759,6 +792,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_id: issue_id,
       identifier: Map.get(running_entry, :identifier, issue_id),
       issue: Map.get(running_entry, :issue),
+      provider: Map.get(running_entry, :provider),
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path),
       session_id: running_entry_session_id(running_entry),
@@ -938,6 +972,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
+    if Config.settings!().agent.internal_pilot do
+      state
+    else
+      dispatch_legacy_issue(state, issue, attempt, preferred_worker_host)
+    end
+  end
+
+  defp dispatch_legacy_issue(%State{} = state, issue, attempt, preferred_worker_host) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -1419,6 +1461,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: metadata.identifier,
           issue_url: metadata.issue.url,
           state: metadata.issue.state,
+          provider: Map.get(metadata, :provider),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: metadata.session_id,
@@ -1458,6 +1501,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(metadata, :identifier),
           issue_url: blocked_issue_url(metadata),
           state: blocked_issue_state(metadata),
+          provider: Map.get(metadata, :provider),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: Map.get(metadata, :session_id),
@@ -1515,6 +1559,8 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_output = Map.get(running_entry, :codex_last_reported_output_tokens, 0)
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
+
+    running_entry = maybe_put_runtime_value(running_entry, :provider, update[:provider])
 
     {
       Map.merge(running_entry, %{

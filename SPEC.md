@@ -107,6 +107,9 @@ Important boundary:
    - Builds prompt from issue + workflow template.
    - Launches the coding agent app-server client.
    - Streams agent updates back to the orchestrator.
+   - MAY enrich a Linear issue's prompt from a linked Jira issue without changing its dispatch identity.
+   - MAY select an agent from the current tracker state and classify unresolved scope before dispatch.
+     When a routed phase changes, the next attempt reuses the issue workspace.
 
 7. `Status Surface` (OPTIONAL)
    - Presents human-readable runtime status (for example terminal output, dashboard, or other
@@ -923,6 +926,11 @@ Failure semantics:
 - `after_create` failure or timeout is fatal to workspace creation.
 - `before_run` failure or timeout is fatal to the current run attempt.
 - `after_run` failure or timeout is logged and ignored.
+
+The Elixir implementation also supports the optional `hooks.after_success`
+extension. It runs after a successful provider attempt and before the
+best-effort `after_run` hook. Its failure or timeout fails the attempt, so a
+workflow can require verified external evidence before completing a handoff.
 - `before_remove` failure or timeout is logged and ignored.
 
 ### 9.5 Safety Invariants
@@ -1147,6 +1155,10 @@ Timeouts:
 - `codex.turn_timeout_ms`: maximum silence interval while a turn stream is active; each
   app-server output resets it, so it is not a total turn runtime cap
 - `codex.stall_timeout_ms`: enforced by orchestrator based on event inactivity
+
+The fork's optional headless provider runners also enforce an elapsed-time cap. The default is
+`codex.turn_timeout_ms` and the fork accepts `agent.headless_max_duration_ms` as an override.
+This does not change the Codex App Server turn timeout.
 
 Error mapping (RECOMMENDED normalized categories):
 
@@ -1496,6 +1508,9 @@ Enablement (extension):
 #### 13.7.2 JSON REST API (`/api/v1/*`)
 
 Provide a JSON REST API under `/api/v1/*` for current runtime state and operational debugging.
+
+In the multi-provider fork, running and blocked entries may include an observed `provider`
+(`codex`, `claude`, or `gemini`). Clients should tolerate missing or unknown providers.
 
 Minimum endpoints:
 

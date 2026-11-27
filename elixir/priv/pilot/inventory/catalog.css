@@ -1,0 +1,41 @@
+:root {
+  color: #192a22;
+  background: #f7f5ed;
+  font-family: "Avenir Next", Avenir, system-ui, sans-serif;
+  font-synthesis: none;
+  caret-color: #14634c;
+}
+
+* { box-sizing: border-box; }
+::selection { color: #153024; background: #b8dfcb; }
+body { margin: 0; }
+header { padding: 1.15rem max(1.25rem, calc((100vw - 64rem) / 2)); border-bottom: 1px solid #d8ded2; }
+.brand { font-weight: 700; letter-spacing: -.02em; }
+main { width: min(100% - 2.5rem, 64rem); margin: 3rem auto; }
+h1 { margin: 0 0 1.4rem; font-size: 2.5rem; letter-spacing: -.035em; }
+section { background: #fdfcf7; border: 1px solid #d3dbd0; border-radius: .85rem; overflow: hidden; }
+.toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .8rem; padding: 1rem 1.25rem; }
+.toolbar p { margin: 0; color: #475c50; font-size: .93rem; }
+#controls { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; }
+button { min-height: 2.55rem; padding: .45rem .65rem; border-radius: .38rem; border: 1px solid #789082; color: #1c4c3b; background: #fdfcf7; font: inherit; font-size: .9rem; cursor: pointer; }
+button:hover, fieldset label:hover { background: #eef5ed; }
+button[aria-pressed="true"] { background: #205a44; color: white; border-color: #205a44; }
+button:focus-visible, input:focus-visible { outline: 2px solid #13745b; outline-offset: 2px; }
+fieldset { display: flex; flex-wrap: wrap; gap: .35rem; border: 0; padding: 0; margin: 0; }
+legend { padding: 0; color: #475c50; font-size: .84rem; }
+fieldset label { display: flex; align-items: center; gap: .3rem; padding: .45rem; border-radius: .38rem; font-size: .9rem; cursor: pointer; }
+fieldset input { accent-color: #205a44; margin: 0; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: .9rem 1.25rem; text-align: left; }
+th { background: #f0f3ea; font-size: .84rem; color: #405747; }
+tbody tr + tr { border-top: 1px solid #e2e7dd; }
+tbody th { background: #fdfcf7; color: #192a22; font-size: 1rem; }
+td:last-child { color: #215744; }
+tr.unavailable td:last-child { color: #684a36; }
+
+@media (max-width: 35rem) {
+  main { width: min(100% - 1.4rem, 64rem); margin-top: 2rem; }
+  header { padding-inline: .85rem; }
+  th, td, .toolbar { padding-inline: .65rem; }
+  tbody th, td { font-size: .84rem; }
+}
