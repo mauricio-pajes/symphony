@@ -37,7 +37,7 @@ defmodule SymphonyElixir.InternalPilot do
     :claude_pilot_invalid_review,
     :claude_pilot_timeout
   ]
-  @review_observation_window_ms 20_000
+  @transition_observation_window_ms 20_000
   @phase_specs %{
     planning: {:gemini, :research, "test ! -e result.txt"},
     implementation: {:codex, :implement, "printf 'fixture-response\\n' > result.txt"},
@@ -70,7 +70,7 @@ defmodule SymphonyElixir.InternalPilot do
     :current,
     :queue_since,
     :provider_retry,
-    :review_observation_until,
+    :transition_observation_until,
     provider_retries: %{},
     history: %{}
   ]
@@ -84,7 +84,7 @@ defmodule SymphonyElixir.InternalPilot do
     with mode when mode in ["fixture", "codex", "multi_agent", "api_demo", "queue"] <- Map.get(pilot, "implementation", "fixture"),
          true <- configured_runners?(mode, Map.fetch(pilot, "demo_runner"), Map.fetch(pilot, "frontend_runner")),
          {:ok, _since} <- queue_since(mode, Map.get(pilot, "queue_since")),
-         settings = Map.drop(pilot, ["implementation", "demo_runner", "frontend_runner", "queue_since"]),
+         settings = Map.drop(pilot, ["implementation", "demo_runner", "frontend_runner", "queue_since", "in_progress_state_id"]),
          true <- scoped_settings?(mode, settings),
          %{
            "human_review_state_id" => review,
@@ -93,6 +93,7 @@ defmodule SymphonyElixir.InternalPilot do
            "image" => image
          } <- settings,
          true <- uuid?(review) and absolute?(directory) and absolute?(socket),
+         true <- progress_state?(mode, Map.get(pilot, "in_progress_state_id"), review),
          true <- is_binary(image) and Regex.match?(~r/\Asha256:[a-f0-9]{64}\z/, image),
          true <- tracker.kind == "linear" and is_binary(tracker.project_slug) and tracker.project_slug != "",
          true <- allowed_endpoint?(tracker.endpoint) and worker.ssh_hosts == [] and absolute?(workspace.root),
@@ -111,7 +112,13 @@ defmodule SymphonyElixir.InternalPilot do
     settings = config.agent.internal_pilot
     root = config.workspace.root
     boot = unique_id()
-    scope = %{issue_id: settings["issue_id"], review_id: settings["human_review_state_id"], tracker: config.tracker}
+
+    scope = %{
+      issue_id: settings["issue_id"],
+      review_id: settings["human_review_state_id"],
+      progress_id: settings["in_progress_state_id"],
+      tracker: config.tracker
+    }
 
     with {:ok, worker} <- Worker.open(settings["docker_socket"], root),
          {:ok, journal} <- open_journal(settings["state_directory"], root, boot),
@@ -366,19 +373,20 @@ defmodule SymphonyElixir.InternalPilot do
     %{reset_queue_run(queue) | reason: :pilot_queue_recovery_blocked, history: Map.merge(queue.history, blocked)}
   end
 
-  defp finish_queue_run(queue, %{reason: :pilot_review_transition_unconfirmed} = current) do
+  defp finish_queue_run(queue, %{reason: reason} = current)
+       when reason in [:pilot_start_transition_unconfirmed, :pilot_review_transition_unconfirmed] do
     now = System.monotonic_time(:millisecond)
-    deadline = queue.review_observation_until || now + @review_observation_window_ms
+    deadline = queue.transition_observation_until || now + @transition_observation_window_ms
 
     if now < deadline do
-      %{queue | current: current, review_observation_until: deadline}
+      %{queue | current: current, transition_observation_until: deadline}
     else
-      archive_queue_run(queue, current)
+      archive_queue_run(queue, stop(current, reason))
     end
   end
 
   defp finish_queue_run(queue, %{reason: reason} = current) when is_nil(reason) or reason == :pilot_demo_pending do
-    %{queue | current: current}
+    %{queue | current: current, transition_observation_until: nil}
   end
 
   defp finish_queue_run(queue, current) do
@@ -391,7 +399,7 @@ defmodule SymphonyElixir.InternalPilot do
     %{reset_queue_run(queue) | history: Map.new(history)}
   end
 
-  defp reset_queue_run(queue), do: %{queue | current: nil, provider_retry: nil, provider_retries: %{}, review_observation_until: nil}
+  defp reset_queue_run(queue), do: %{queue | current: nil, provider_retry: nil, provider_retries: %{}, transition_observation_until: nil}
 
   defp after_cutover?(_created, nil), do: true
   defp after_cutover?(%DateTime{} = created, cutoff), do: DateTime.compare(created, cutoff) != :lt
@@ -467,6 +475,10 @@ defmodule SymphonyElixir.InternalPilot do
     {prepared.decision.target.provider, "Internal phase: #{prepared.attempt.phase}"}
   end
 
+  defp observe(%{reason: :pilot_start_transition_unconfirmed} = pilot, supervisor, {:ok, item}) do
+    observe_start(%{pilot | item: item}, item, supervisor)
+  end
+
   defp observe(pilot, supervisor, {:ok, item}) do
     pilot = %{pilot | item: item}
 
@@ -495,8 +507,8 @@ defmodule SymphonyElixir.InternalPilot do
   defp dispatch_observed(pilot, supervisor), do: launch_phase(pilot, supervisor)
 
   defp eligible?(pilot, item) do
-    start_state?(item.issue.state) and jira_description?(item.issue.description, jira_url(pilot.mode)) and
-      (pilot.source == nil or source(item) == pilot.source)
+    jira_description?(item.issue.description, jira_url(pilot.mode)) and
+      if(pilot.source, do: source(item) == pilot.source, else: start_state?(item.issue.state))
   end
 
   defp source(item), do: {item.team_id, item.state_id, item.issue.title, item.issue.description}
@@ -529,9 +541,39 @@ defmodule SymphonyElixir.InternalPilot do
              independent_review: pilot.mode != :codex
            }) do
       log(pilot, "read simulated Jira requirements key=#{jira_key(pilot.mode)}")
-      launch_phase(%{pilot | run: run, source: source(item)}, supervisor)
+      begin_work(%{pilot | run: run, source: source(item)}, supervisor)
     else
       _error -> stop(pilot, :pilot_admission_failed)
+    end
+  end
+
+  defp begin_work(%{scope: %{progress_id: nil}} = pilot, supervisor), do: launch_phase(pilot, supervisor)
+
+  defp begin_work(pilot, supervisor) do
+    with {:ok, item} <- Linear.read(pilot.scope),
+         true <- eligible?(pilot, item) do
+      response = Linear.move_to_progress(pilot.scope)
+      log(pilot, "requested In Progress result=#{inspect(response)}")
+      observe(%{pilot | reason: :pilot_start_transition_unconfirmed}, supervisor, Linear.read(pilot.scope))
+    else
+      _changed_or_unavailable -> stop(pilot, :pilot_start_source_unconfirmed)
+    end
+  end
+
+  defp observe_start(pilot, item, supervisor) do
+    expected = put_elem(pilot.source, 1, pilot.scope.progress_id)
+    current = source(item)
+
+    cond do
+      current == expected and item.issue.state == "In Progress" ->
+        log(pilot, "confirmed state=In Progress")
+        launch_phase(%{pilot | reason: nil, source: expected}, supervisor)
+
+      current == pilot.source ->
+        pilot
+
+      true ->
+        stop(pilot, :pilot_issue_changed)
     end
   end
 
@@ -842,6 +884,10 @@ defmodule SymphonyElixir.InternalPilot do
   defp scoped_settings?("queue", settings), do: map_size(settings) == 4 and not Map.has_key?(settings, "issue_id")
   defp scoped_settings?(_mode, %{"issue_id" => issue} = settings), do: map_size(settings) == 5 and uuid?(issue)
   defp scoped_settings?(_mode, _settings), do: false
+
+  defp progress_state?(_mode, nil, _review), do: true
+  defp progress_state?("queue", progress, review), do: uuid?(progress) and progress != review
+  defp progress_state?(_mode, _progress, _review), do: false
 
   defp fetch_jira(link, mode) do
     key = jira_key(mode)

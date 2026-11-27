@@ -23,8 +23,16 @@ existing workflow, provider adapters and Docker leases. A bounded view of
 recent outcomes stays in the running daemon for the TUI. The admission
 journal remains the source of truth for restart checks and prevents replay
 of known issue IDs. A new boot verifies and drains outstanding leases before
-admitting unrelated work. A failure with a settled lease can leave its issue
-in Todo and let the next eligible ticket progress.
+admitting unrelated work. A failure with a settled lease can leave the
+issue parked and let the next eligible ticket progress.
+
+Queue deployments can configure the same team's In Progress state
+by UUID. Todo remains the discovery state. Once the daemon admits the
+issue durably, it reads the issue again, writes the new state once and
+confirms the destination with the original issue source before launching
+planning. If the transition is uncertain, the daemon polls readback for
+up to twenty seconds and parks the attempt if it cannot confirm the change.
+Linear's state update and the source read are separate operations.
 
 Retry transient provider errors and invalid structured output in the
 same phase after five and fifteen seconds. Recheck the run, workspace
@@ -57,12 +65,21 @@ each. The API issue had two private Bruno videos covering the available
 and missing responses, plus a reproducible cURL command. All three issues
 used simulated Jira requirements.
 
+After enabling In Progress for the same Sandbox project, an independent
+Linear Cloud read observed Todo, In Progress and Human Review on a new
+catalog issue. The daemon confirmed In Progress before launching Gemini,
+and Human Review contained the approved diff, passing checks and browser
+recording. A local fixture also exercised lost acknowledgements and a
+start transition that never applied.
+
 ## Consequences
 
 - The daemon can stay running with the TUI closed. The desktop runner
   still needs its local applications and permissions when a demo starts.
-- Linear keeps the issue in Todo during the pilot phases. The running
-  provider is visible on the loopback status endpoint and in the TUI.
+- With the optional In Progress state configured, claimed issues stay
+  there until Human Review or a human transition. An interrupted or blocked
+  issue may remain In Progress for inspection. The running provider and
+  current-boot blocked reason are available on the loopback endpoint and TUI.
 - Interrupted work stays recorded for inspection. The pilot does not replay
   uploads or review mutations. General repository admission and concurrent
   desktop captures are outside this experiment.

@@ -1,18 +1,35 @@
 defmodule SymphonyElixir.Linear.InternalPilot do
   @moduledoc """
-  Reads the one configured Linear test issue and projects its review milestone.
+  Reads a scoped Linear pilot issue and projects its workflow milestones.
   All queries carry the frozen host configuration. Mutations are never retried.
   """
 
   alias SymphonyElixir.Linear.Client
   alias SymphonyElixir.Tracker.Issue
 
-  @read """
-  query SymphonyPilotIssue($id: ID!, $project: String!, $review: String!) {
+  @issue_fields """
     issues(filter: {id: {eq: $id}, project: {slugId: {eq: $project}}}, first: 1) {
       nodes { id identifier title description url archivedAt state { id name } team { id } }
     }
     workflowState(id: $review) { id name team { id } }
+  """
+  @read """
+  query SymphonyPilotIssue($id: ID!, $project: String!, $review: String!) {
+    #{@issue_fields}
+  }
+  """
+  @read_with_progress """
+  query SymphonyPilotIssue($id: ID!, $project: String!, $review: String!, $progress: String!) {
+    #{@issue_fields}
+    progress: workflowState(id: $progress) { id name type team { id } }
+  }
+  """
+  @move_to_progress """
+  mutation SymphonyPilotInProgress($id: String!, $stateId: String!) {
+    issueUpdate(id: $id, input: {stateId: $stateId}) {
+      success
+      issue { id state { id name } }
+    }
   }
   """
   @move """
@@ -34,14 +51,16 @@ defmodule SymphonyElixir.Linear.InternalPilot do
   """
 
   @type item :: %{issue: Issue.t(), state_id: String.t(), team_id: String.t()}
-  @type scope :: %{issue_id: String.t(), review_id: String.t(), tracker: map()}
+  @type scope :: %{issue_id: String.t(), review_id: String.t(), progress_id: String.t() | nil, tracker: map()}
 
   @spec read(scope()) :: {:ok, item()} | {:error, term()}
-  def read(%{issue_id: id, review_id: review, tracker: tracker}) do
+  def read(%{issue_id: id, review_id: review, progress_id: progress, tracker: tracker}) do
     vars = %{id: id, project: tracker.project_slug, review: review}
+    {query, vars} = if progress, do: {@read_with_progress, Map.put(vars, :progress, progress)}, else: {@read, vars}
 
-    with {:ok, data} <- graphql(tracker, @read, vars),
+    with {:ok, data} <- graphql(tracker, query, vars),
          %{"id" => ^review, "name" => "Human Review", "team" => %{"id" => team}} <- data["workflowState"],
+         true <- valid_progress?(progress, team, data["progress"]),
          [%{"id" => ^id, "team" => %{"id" => ^team}, "archivedAt" => nil} = node] <- get_in(data, ["issues", "nodes"]),
          %{"id" => state_id, "name" => state} when is_binary(state_id) and is_binary(state) <- node["state"],
          %{"identifier" => identifier, "title" => title} when is_binary(identifier) and is_binary(title) <- node do
@@ -57,20 +76,34 @@ defmodule SymphonyElixir.Linear.InternalPilot do
       {:ok, %{issue: issue, state_id: state_id, team_id: team}}
     else
       {:error, reason} -> {:error, reason}
-      _unexpected -> {:error, :pilot_issue_or_review_state_out_of_scope}
+      _unexpected -> {:error, :pilot_issue_or_workflow_state_out_of_scope}
     end
+  end
+
+  defp valid_progress?(nil, _team, _state), do: true
+
+  defp valid_progress?(id, team, state) do
+    match?(%{"id" => ^id, "name" => "In Progress", "type" => "started", "team" => %{"id" => ^team}}, state)
+  end
+
+  @spec move_to_progress(scope()) :: :ok | {:error, term()}
+  def move_to_progress(%{issue_id: id, progress_id: progress, tracker: tracker}) do
+    move(tracker, {@move_to_progress, %{id: id, stateId: progress}}, "In Progress", :pilot_start_transition_unconfirmed)
   end
 
   @spec move_to_review(scope(), String.t() | nil) :: :ok | {:error, term()}
   def move_to_review(%{issue_id: id, review_id: review, tracker: tracker}, description) do
-    {query, vars} = update_input(id, review, description)
+    move(tracker, update_input(id, review, description), "Human Review", :pilot_review_transition_unconfirmed)
+  end
 
+  defp move(tracker, {query, %{id: id, stateId: destination} = vars}, state, unconfirmed) do
     with {:ok, data} <- graphql(tracker, query, vars),
-         %{"success" => true, "issue" => %{"id" => ^id, "state" => %{"id" => ^review, "name" => "Human Review"}}} <- data["issueUpdate"] do
+         %{"success" => true, "issue" => %{"id" => ^id, "state" => issue_state}} <- data["issueUpdate"],
+         %{"id" => ^destination, "name" => ^state} <- issue_state do
       :ok
     else
       {:error, reason} -> {:error, reason}
-      _unexpected -> {:error, :pilot_review_transition_unconfirmed}
+      _unexpected -> {:error, unconfirmed}
     end
   end
 

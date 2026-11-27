@@ -7,7 +7,7 @@ This fork can also [read Jira links from a personal Linear queue and route phase
 The independent [terminal console](tui/README.md) reads the running daemon's queue and session snapshots.
 The [Linear-to-Human-Review pilot](elixir/README.md#synthetic-linear-to-human-review-pilot) exercises the daemon and its isolated internal phases. Its [authenticated modes](elixir/README.md#authenticated-multi-agent-pilot) publish a verified test-repository diff, check results and, in multi-agent mode, the Gemini plan and Claude Code review on a scoped Linear issue with simulated Jira requirements.
 
-The [continuous Stockroom queue](elixir/README.md#continuous-stockroom-queue) picks up synthetic API and frontend work from Linear. It captures API-only changes in Bruno and catalog interactions in the browser before Human Review.
+The [continuous Stockroom queue](elixir/README.md#continuous-stockroom-queue) picks up synthetic API and frontend work from Linear. It can mark the selected issue In Progress before work starts, then captures API-only changes in Bruno and catalog interactions in the browser before Human Review.
 The [container fixture](elixir/README.md#isolated-internal-phase-fixture) covers workspace recovery.
 
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)

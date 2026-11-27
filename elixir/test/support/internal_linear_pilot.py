@@ -13,7 +13,6 @@ import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.error import URLError
 from urllib.request import urlopen
 
 
@@ -21,6 +20,7 @@ ISSUE = "11111111-1111-4111-8111-111111111111"
 TODO = "22222222-2222-4222-8222-222222222222"
 REVIEW = "33333333-3333-4333-8333-333333333333"
 TEAM = "44444444-4444-4444-8444-444444444444"
+PROGRESS = "66666666-6666-4666-8666-666666666666"
 PROJECT = "symphony-synthetic"
 JIRA = "https://jira.fixture.test/browse/PILOT-1"
 CODEX_JIRA = "https://jira.fixture.test/browse/PILOT-2"
@@ -48,7 +48,8 @@ class LinearFixture:
         self.name = "Todo"
         self.state_id = TODO
         self.mode = mode
-        self.queue = mode in ("queue", "queue-crash", "queue-retry")
+        self.queue = mode in ("queue", "queue-crash", "queue-retry", "queue-start-unconfirmed")
+        self.progress = self.queue and mode != "queue"
         self.api = self.queue or mode in ("api", "api-demo-failed")
         self.multi = self.api or mode in ("multi", "multi-rejected")
         self.repository = self.multi or mode in ("codex", "codex-invalid")
@@ -63,6 +64,9 @@ class LinearFixture:
         self.queue_add = threading.Event()
         self.ledger_path = None
         self.review_read_failed = False
+        self.progress_read_failed = False
+        self.progress_writes = 0
+        self.progress_observed = False
 
     def request(self, query, variables):
         with self.lock:
@@ -72,10 +76,14 @@ class LinearFixture:
                 if self.queue_add.is_set() and self.state_id == TODO:
                     candidates.append(self.queue_node(ISSUE, "2026-01-02T00:00:00Z"))
                 return 200, {"data": {"issues": {"nodes": candidates, "pageInfo": {"hasNextPage": False}}}}
-            if "query SymphonyPilotIssue" in query and variables == {
-                "id": ISSUE, "project": PROJECT, "review": REVIEW,
-            }:
+            read_variables = {"id": ISSUE, "project": PROJECT, "review": REVIEW}
+            if self.progress:
+                read_variables["progress"] = PROGRESS
+            if "query SymphonyPilotIssue" in query and variables == read_variables:
                 self.reads += 1
+                if self.mode == "queue-retry" and self.state_id == PROGRESS and not self.progress_read_failed:
+                    self.progress_read_failed = True
+                    return 503, {"errors": [{"message": "In Progress observation temporarily unavailable"}]}
                 if self.mode == "queue-retry" and self.state_id == REVIEW and not self.review_read_failed:
                     self.review_read_failed = True
                     return 503, {"errors": [{"message": "Review observation temporarily unavailable"}]}
@@ -87,7 +95,7 @@ class LinearFixture:
                 else:
                     title = "Synthetic Symphony pilot"
 
-                return 200, {"data": {
+                data = {
                     "issues": {"nodes": [{
                         "id": ISSUE,
                         "identifier": "SYMP-1",
@@ -99,7 +107,23 @@ class LinearFixture:
                         "state": {"id": self.state_id, "name": self.name},
                     }]},
                     "workflowState": {"id": REVIEW, "name": "Human Review", "team": {"id": TEAM}},
-                }}
+                }
+                if self.progress:
+                    data["progress"] = {"id": PROGRESS, "name": "In Progress", "type": "started", "team": {"id": TEAM}}
+                    self.progress_observed |= self.state_id == PROGRESS
+                return 200, {"data": data}
+
+            if self.progress and "mutation SymphonyPilotInProgress" in query and variables == {"id": ISSUE, "stateId": PROGRESS}:
+                assert self.state_id == TODO
+                self.progress_writes += 1
+                if self.mode == "queue-start-unconfirmed":
+                    return 503, {"errors": [{"message": "In Progress write not applied"}]}
+                self.name, self.state_id = "In Progress", PROGRESS
+                if self.mode == "queue-retry":
+                    return 503, {"errors": [{"message": "In Progress acknowledgement lost after applying mutation"}]}
+                return 200, {"data": {"issueUpdate": {
+                    "success": True, "issue": {"id": ISSUE, "state": {"id": PROGRESS, "name": "In Progress"}},
+                }}}
 
             expected = {"id": ISSUE, "stateId": REVIEW}
             if self.repository:
@@ -108,6 +132,8 @@ class LinearFixture:
                         and "Offline checks passed (4/4)" in description):
                     expected["description"] = description
             if "mutation SymphonyPilotHumanReview" in query and variables == expected:
+                if self.progress:
+                    assert self.state_id == PROGRESS and self.progress_observed
                 self.changes += 1
                 if self.mode == "lost-ack-active":
                     return 503, {"errors": [{"message": "Mock acknowledgement lost without applying mutation"}]}
@@ -184,6 +210,8 @@ def write_workflow(root, server, args):
     frontend_runner: {json.dumps(str(root / 'bin' / 'bruno-demo'))}
     queue_since: "2026-01-01T00:00:00Z"
 '''
+        if server.fixture.progress:
+            implementation += f'    in_progress_state_id: "{PROGRESS}"\n'
         scope = ""
     workflow = root / "WORKFLOW.md"
     workflow.write_text(f"""---
@@ -237,16 +265,16 @@ def stop_daemon(process):
             process.wait()
 
 
-def await_blocked(daemon, port, reasons, state):
+def await_blocked(daemon, port, reasons, state, timeout=25):
     if isinstance(reasons, str):
         reasons = (reasons,)
-    deadline = time.monotonic() + 25
+    deadline = time.monotonic() + timeout
     snapshot = {}
     while time.monotonic() < deadline and daemon.poll() is None:
         try:
             with urlopen(f"http://127.0.0.1:{port}/api/v1/state", timeout=2) as response:
                 snapshot = json.load(response)
-        except (URLError, TimeoutError):
+        except OSError:
             pass
         for entry in snapshot.get("blocked", []):
             if entry["issue_id"] == ISSUE and entry["state"] == state and entry["error"] in reasons:
@@ -271,7 +299,7 @@ def run_case(args, mode):
             thread.start()
             try:
                 verify = {"crash": verify_crash, "queue-crash": verify_crash, "queue": verify_queue,
-                          "queue-retry": verify_queue}.get(mode, verify_case)
+                          "queue-retry": verify_queue, "queue-start-unconfirmed": verify_unconfirmed_start}.get(mode, verify_case)
                 verify(args, mode, root, server, log)
             except Exception:
                 if log.exists():
@@ -452,6 +480,8 @@ def verify_crash(args, mode, root, server, log):
             assert server.fixture.queue_polled.wait(12)
             server.fixture.queue_add.set()
         assert server.fixture.read_blocked.wait(20), daemon_logs(log)
+        if server.fixture.progress:
+            assert server.fixture.progress_observed and server.fixture.progress_writes == 1
         [record] = json.loads(ledger.read_text())["records"]
         assert record["lease"]["process_identity"].startswith("docker:"), record
         daemon.kill()
@@ -476,7 +506,7 @@ def verify_crash(args, mode, root, server, log):
     assert record["status"] == "parked" and record["generation"] == 1 and record["lease"] is None, record
     assert server.fixture.changes == 0
     assert not server.fixture.unexpected, server.fixture.unexpected
-    print(f"{mode}: attached worker drained after BEAM restart; generation 1 parked, no transition")
+    print(f"{mode}: attached worker drained after BEAM restart; generation 1 parked, no review transition")
 
 
 def verify_queue(args, mode, root, server, log):
@@ -497,14 +527,15 @@ def verify_queue(args, mode, root, server, log):
                     [retry] = snapshot["retrying"]
                     assert retry["issue_id"] == ISSUE and retry["attempt"] == 1, retry
                     assert retry["due_at"] > snapshot["generated_at"], retry
+                    assert fixture.state_id == PROGRESS and fixture.progress_observed
                     break
                 time.sleep(0.1)
             else:
                 raise AssertionError("The failed planner did not expose a retry for the original ticket")
-        await_blocked(daemon, port, "human review", "Human Review")
+        await_blocked(daemon, port, "human review", "Human Review", timeout=45)
         assert "### Bruno API demos" in fixture.description
         if mode == "queue-retry":
-            assert fixture.review_read_failed
+            assert fixture.progress_read_failed and fixture.review_read_failed
             logs = daemon_logs(log)
             assert logs.count("started authenticated provider=gemini phase=planning") == 2
             assert logs.count("started authenticated provider=gemini phase=demo") == 1
@@ -521,10 +552,39 @@ def verify_queue(args, mode, root, server, log):
         assert fixture.queue_polled.wait(12)
         time.sleep(0.7)
         assert fixture.changes == 1 and not fixture.unexpected, fixture.unexpected
+        assert fixture.progress_writes == int(fixture.progress)
         assert daemon_logs(log).count("started phase=") == 4
     finally:
         stop_daemon(restarted)
     print("queue: admitted a new Todo issue after startup, skipped pre-cutover work and did not replay after restart")
+
+
+def verify_unconfirmed_start(args, mode, root, server, log):
+    fixture = server.fixture
+    workflow = write_workflow(root, server, args)
+    write_provider_stubs(root, mode)
+    port = daemon_port()
+    daemon = start_daemon(args.binary, workflow, port, log)
+    try:
+        assert fixture.queue_polled.wait(12)
+        fixture.queue_add.set()
+        await_blocked(daemon, port, "pilot start transition unconfirmed", "Todo")
+        ledger = root / "state" / "admission.json"
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline:
+            [record] = json.loads(ledger.read_text())["records"]
+            if record["status"] == "parked":
+                break
+            time.sleep(0.2)
+        else:
+            raise AssertionError("The unconfirmed start did not park after its observation window")
+        assert record["generation"] == 0 and record["lease"] is None, record
+        assert fixture.progress_writes == 1 and fixture.changes == 0
+        assert "started authenticated provider=" not in daemon_logs(log)
+        assert not fixture.unexpected, fixture.unexpected
+    finally:
+        stop_daemon(daemon)
+    print("queue-start-unconfirmed: observed without a second write and parked before launching any agent")
 
 
 def main():
@@ -538,7 +598,7 @@ def main():
     for mode in ("normal", "codex", "codex-invalid", "multi", "multi-rejected", "lost-ack-applied", "lost-ack-active", "edited", "crash"):
         run_case(args, mode)
     if args.api_image:
-        for mode in ("api", "api-demo-failed", "queue", "queue-crash", "queue-retry"):
+        for mode in ("api", "api-demo-failed", "queue", "queue-crash", "queue-retry", "queue-start-unconfirmed"):
             run_case(args, mode)
 
 

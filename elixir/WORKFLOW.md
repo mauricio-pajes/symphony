@@ -35,6 +35,7 @@ agent:
   # Use multi_agent with the PILOT-3 fixture for Gemini, Codex and Claude Code.
   # Use api_demo with PILOT-4 and a trusted, absolute demo_runner path for the Stockroom example.
   # Use queue with the Bruno and frontend runners to admit the three Stockroom fixtures from Todo.
+  # In queue mode, set in_progress_state_id to the team's In Progress UUID to claim issues in Linear.
   # See README.md#synthetic-linear-to-human-review-pilot.
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server

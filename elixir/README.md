@@ -333,6 +333,9 @@ FFmpeg. It reuses the private Linear asset uploader. The launcher can set
 `NODE_PATH` to the directory containing its installed `playwright` package.
 Set `queue_since` to an ISO 8601 timestamp when enabling an existing sandbox
 if older tickets should be kept out of the initial run.
+Set `in_progress_state_id` to the team's In Progress state UUID to show
+claimed tickets on the board. Linear must report that state as started
+and on the same team as Human Review.
 
 The daemon selects one eligible ticket at a time from the project's Todo
 state. Use exactly one simulated Jira link in the issue description:
@@ -345,10 +348,14 @@ state. Use exactly one simulated Jira link in the issue description:
 
 Launch the daemon with a loopback observability port and point the [TUI](../tui/README.md)
 at that same address with `-url`. The daemon keeps polling when the TUI is
-closed. Linear retains Todo while the serial phases run and receives Human
-Review together with the approved diff and demo evidence. The TUI shows the
-active provider, scheduled retries and recent outcomes. Retryable provider
-errors get two attempts on the same phase after short delays. The daemon
+closed. When `in_progress_state_id` is configured, the daemon reserves the
+issue and confirms the In Progress transition before planning starts.
+An uncertain transition is observed for up to twenty seconds without a
+second write. Without the setting, the queue stays in Todo during work.
+In both cases, Human Review receives the approved diff and demo evidence.
+The TUI shows the active provider, scheduled retries and recent outcomes.
+Retryable provider errors get two attempts on the same phase after short
+delays. The daemon
 checks the current issue source and the lease-free workspace before
 restarting the provider. Bruno retries request preparation once before
 capture. After an uncertain Human Review write, the daemon polls for
