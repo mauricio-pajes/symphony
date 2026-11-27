@@ -78,7 +78,7 @@ func newModel(ctx context.Context, client *daemonClient, opt options) model {
 	filter.Prompt = "/ "
 	filter.CharLimit = 100
 	filter.SetWidth(30)
-	return model{
+	m := model{
 		ctx:       ctx,
 		client:    client,
 		opt:       opt,
@@ -89,6 +89,8 @@ func newModel(ctx context.Context, client *daemonClient, opt options) model {
 		filter:    filter,
 		pollDelay: initialPollDelay,
 	}
+	m.updateMotions(time.Now(), nil)
+	return m
 }
 
 func (m model) Init() tea.Cmd {
@@ -146,16 +148,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) receivePoll(result pollResult) {
 	m.lastErr = result.err
 	if result.err != nil {
-		m.motions = nil
+		m.updateMotions(result.receivedAt, nil)
 		m.pollDelay = min(m.pollDelay*2, 20*time.Second)
 		return
 	}
 
 	m.snapshot = result.snapshot
 	m.tickets = sortedTickets(result.snapshot)
-	if !m.opt.noMotion && len(m.assets.sprites) > 0 {
-		m.updateMotions(result.receivedAt)
-	}
+	m.updateMotions(result.receivedAt, m.tickets)
 	m.lastSuccess = result.receivedAt
 	m.pollDelay = initialPollDelay
 	m.keepSelection()
@@ -165,8 +165,12 @@ func (m *model) receivePoll(result pollResult) {
 	}
 }
 
-func (m *model) updateMotions(at time.Time) {
-	kinds := runningMotions(m.tickets)
+func (m *model) updateMotions(at time.Time, tickets []ticket) {
+	if m.opt.noMotion || len(m.assets.sprites) == 0 {
+		m.motions = nil
+		return
+	}
+	kinds := runningMotions(tickets)
 	next := make(map[string]spriteMotion, len(m.assets.sprites))
 	for provider, art := range m.assets.sprites {
 		kind := kinds[provider]

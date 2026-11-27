@@ -13,7 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-func TestMotionUsesCurrentRunsAndClearsOnError(t *testing.T) {
+func TestMotionUsesCurrentRunsAndRestsOnError(t *testing.T) {
 	m := newModel(context.Background(), nil, options{})
 	m.width, m.height = 110, 30
 	frame := func(label string) []string {
@@ -41,9 +41,19 @@ func TestMotionUsesCurrentRunsAndClearsOnError(t *testing.T) {
 		m = next.(model)
 	}
 
-	if m.scheduleSpriteTick() != nil {
-		t.Fatal("motion started before the first successful poll")
+	m.updateMotions(now, nil)
+	if m.scheduleSpriteTick() == nil || m.sprite("gemini")[0] != "rest 1" {
+		t.Fatal("startup should animate the rest pose while connecting")
 	}
+	startupError := errors.New("offline")
+	m.receivePoll(pollResult{receivedAt: now.Add(time.Millisecond), err: startupError})
+	tick(now.Add(restFrameInterval))
+	if m.sprite("gemini")[0] != "rest 2" || !strings.Contains(m.render(), "Status unknown") {
+		t.Fatal("the first failed poll should keep the rest loop and show unknown status")
+	}
+	now = now.Add(2 * restFrameInterval)
+	m.updateMotions(now, nil)
+	restStarted := m.motions["codex"].since
 	work := snapshot{Running: []ticket{{ID: "ISSUE-1", Provider: "gemini"}}}
 	poll(now, work)
 	if m.motions["gemini"].kind != motionWork || m.motions["codex"].kind != motionRest || !m.spriteQueued {
@@ -65,7 +75,7 @@ func TestMotionUsesCurrentRunsAndClearsOnError(t *testing.T) {
 
 	nextAt := now.Add(3 * restFrameInterval)
 	poll(nextAt, snapshot{Retrying: work.Running})
-	if m.sprite("gemini")[0] != "rest 1" || !m.motions["codex"].since.Equal(now) {
+	if m.sprite("gemini")[0] != "rest 1" || !m.motions["codex"].since.Equal(restStarted) {
 		t.Fatal("retrying should select rest without resetting other providers")
 	}
 	tick(nextAt.Add(restFrameInterval))
@@ -73,23 +83,27 @@ func TestMotionUsesCurrentRunsAndClearsOnError(t *testing.T) {
 		t.Fatal("rest loop did not continue on a retry")
 	}
 
-	m.receivePoll(pollResult{err: errors.New("offline")})
-	if len(m.motions) != 0 || m.sprite("gemini")[0] != "still" || !strings.Contains(m.render(), "Stale snapshot") {
-		t.Fatal("disconnect did not freeze motion and expose stale status immediately")
+	activeAt := nextAt.Add(2 * restFrameInterval)
+	poll(activeAt, work)
+	disconnectedAt := activeAt.Add(workFrameInterval)
+	m.receivePoll(pollResult{receivedAt: disconnectedAt, err: startupError})
+	if m.sprite("gemini")[0] != "rest 1" || !strings.Contains(m.render(), "Stale snapshot") ||
+		!strings.Contains(m.render(), "Status unknown") {
+		t.Fatal("disconnect should select rest and expose stale status immediately")
 	}
-	next, cmd := m.Update(spriteTick(nextAt.Add(2 * restFrameInterval)))
-	m = next.(model)
-	if cmd != nil || m.spriteQueued {
-		t.Fatal("an outstanding timer restarted a loop while disconnected")
+	m.receivePoll(pollResult{receivedAt: disconnectedAt.Add(time.Millisecond), err: startupError})
+	tick(disconnectedAt.Add(restFrameInterval))
+	if m.sprite("gemini")[0] != "rest 2" {
+		t.Fatal("rest motion should continue through repeated failures")
 	}
-	poll(nextAt.Add(3*restFrameInterval), work)
+	poll(disconnectedAt.Add(2*restFrameInterval), work)
 	if m.motions["gemini"].kind != motionWork || !m.spriteQueued {
 		t.Fatal("the current work loop did not resume after reconnect")
 	}
 
 	m.opt.noMotion = true
-	m.receivePoll(pollResult{err: errors.New("offline")})
-	poll(nextAt.Add(4*restFrameInterval), work)
+	m.receivePoll(pollResult{receivedAt: disconnectedAt.Add(3 * restFrameInterval), err: startupError})
+	poll(disconnectedAt.Add(4*restFrameInterval), work)
 	if len(m.motions) != 0 {
 		t.Fatal("motion ran after being disabled")
 	}

@@ -46,11 +46,10 @@ terminals, multiplexers and inline mode use crisp terminal color cells.
 Use `-graphics cells` to select the cell renderer explicitly. Providers
 without a readable asset use text labels.
 
-Work and rest loop from the first connected snapshot. An unchanged
-poll leaves the current loop running. Work uses a livelier cadence and
-rest uses a slower one. The surrounding text stays in place. Artwork
-holds still while disconnected and resumes from the current state after
-reconnecting. The [terminal design](../docs/personal-symphony-tui.md)
+The rest loop starts while the console connects and continues offline.
+A current snapshot with a running session selects the livelier work
+loop. An unchanged poll leaves the current loop running. Agent status
+shows as unknown until the daemon returns a current snapshot. The [terminal design](../docs/personal-symphony-tui.md)
 records asset provenance and the wider console scope.
 
 `NO_COLOR=1` selects monochrome. `-ascii` selects monochrome and ASCII

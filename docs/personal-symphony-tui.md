@@ -141,10 +141,10 @@ Ghostty and Kitty receive native PNG placements scoped to the alternate screen.
 The cell fallback samples the same transparent frames without blending edges.
 A running ticket with a reported provider selects a continuous work loop.
 A running review can select its own loop. Providers without a running
-ticket use a slower rest loop while the snapshot is current. Each loop
-keeps its place across unchanged polls. Stale or offline snapshots show
-still artwork. One timer advances the visible cards independently of
-daemon polling.
+ticket use a slower rest loop. That same loop runs while connecting or
+offline, with provider status shown as unknown. Each loop keeps its
+place across unchanged polls. One timer advances the visible cards
+independently of daemon polling.
 [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol.html)
 
 The local motion pack uses the original working laptop and review sequences

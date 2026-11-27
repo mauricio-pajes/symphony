@@ -174,6 +174,9 @@ func (m model) center(line string, width int) string {
 }
 
 func (m model) providerStatus(provider string) (string, string) {
+	if m.lastSuccess.IsZero() || m.lastErr != nil {
+		return "Status unknown", ""
+	}
 	var active []ticket
 	for _, row := range m.tickets {
 		if row.Provider == provider {
