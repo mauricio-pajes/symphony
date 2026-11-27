@@ -318,6 +318,17 @@ defmodule SymphonyElixir.AgentRoutingTest do
              )
 
     assert Jason.decode!(review_json) == %{"verdict" => review.verdict, "summary" => review.summary}
+
+    assert {:ok, demo_json} =
+             HeadlessAgent.isolated(
+               :demo_runner,
+               command.(%{type: "demo", result: %{diff_sha256: "revision"}}),
+               workspace,
+               "Demo",
+               1_000
+             )
+
+    assert Jason.decode!(demo_json) == %{"diff_sha256" => "revision"}
     refute File.read!(Path.join(workspace, "captured")) in ["Plan", "Review"]
 
     assert {:error, :invalid_headless_workspace} =

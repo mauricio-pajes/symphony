@@ -81,6 +81,14 @@ the diff and all four checks. A separate Linear Cloud read confirmed the
 published plan digest, review bound to the diff digest, and Human Review.
 A local test verified that a request for changes parks the run instead.
 
+The [Stockroom API pilot](adr-0010-stockroom-api-demo.md) exercised a new
+inventory route from a simulated Jira issue in Linear Cloud. Gemini planned,
+Codex implemented the route configuration, Claude approved the tested diff,
+and Gemini directed the native Bruno recordings. An independent read confirmed
+Human Review with both private video links, cURL and all four passing HTTP
+checks. A local regression also confirmed that a demo failure leaves the
+issue in Todo without attempting a review transition.
+
 ## Comparison with a Codex-only workflow
 
 Use two comparisons. First run the same proposed workflow contract and

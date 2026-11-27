@@ -25,6 +25,11 @@ PROJECT = "symphony-synthetic"
 JIRA = "https://jira.fixture.test/browse/PILOT-1"
 CODEX_JIRA = "https://jira.fixture.test/browse/PILOT-2"
 MULTI_JIRA = "https://jira.fixture.test/browse/PILOT-3"
+API_JIRA = "https://jira.fixture.test/browse/PILOT-4"
+API_ROUTE = {"route": {
+    "method": "GET", "path": "/api/items/{sku}/availability",
+    "fields": ["sku", "on_hand", "reserved", "available"], "not_found": "item_not_found",
+}}
 PLAN = "Trim surrounding horizontal whitespace and preserve ASCII normalization."
 REVIEW_SUMMARY = "The revision matches all three acceptance criteria."
 VERSION_NORMALIZER = (
@@ -43,9 +48,10 @@ class LinearFixture:
         self.name = "Todo"
         self.state_id = TODO
         self.mode = mode
-        self.multi = mode in ("multi", "multi-rejected")
+        self.api = mode in ("api", "api-demo-failed")
+        self.multi = self.api or mode in ("multi", "multi-rejected")
         self.repository = self.multi or mode in ("codex", "codex-invalid")
-        self.jira = MULTI_JIRA if self.multi else CODEX_JIRA if self.repository else JIRA
+        self.jira = API_JIRA if self.api else MULTI_JIRA if self.multi else CODEX_JIRA if self.repository else JIRA
         self.description = self.jira
         if mode == "normal":
             self.description = f"[{JIRA}](<{JIRA}>)"
@@ -138,8 +144,12 @@ def write_workflow(root, server, args):
     journal.mkdir(mode=0o700)
     implementation = ""
     if server.fixture.repository:
-        mode = "multi_agent" if server.fixture.multi else "codex"
+        mode = "api_demo" if server.fixture.api else "multi_agent" if server.fixture.multi else "codex"
         implementation = f"    implementation: {mode}\n"
+    image = args.image
+    if server.fixture.api:
+        implementation += f"    demo_runner: {json.dumps(str(root / 'bin' / 'bruno-demo'))}\n"
+        image = args.api_image
     workflow = root / "WORKFLOW.md"
     workflow.write_text(f"""---
 tracker:
@@ -159,7 +169,7 @@ agent:
     human_review_state_id: "{REVIEW}"
     state_directory: {json.dumps(str(journal))}
     docker_socket: {json.dumps(args.socket)}
-    image: {json.dumps(args.image)}
+    image: {json.dumps(image)}
 observability:
   dashboard_enabled: false
 ---
@@ -248,6 +258,8 @@ def verify_case(args, mode, root, server, log):
         "codex-invalid": ("codex pilot invalid proposal", "Todo", 0, 1),
         "multi": ("human review", "Human Review", 1, 4),
         "multi-rejected": ("claude pilot changes requested", "Todo", 0, 3),
+        "api": ("human review", "Human Review", 1, 4),
+        "api-demo-failed": ("pilot bruno demo failed", "Todo", 0, 4),
         "lost-ack-applied": ("human review", "Human Review", 1, 4),
         "lost-ack-active": ("pilot review transition unconfirmed", "Todo", 1, 4),
         "edited": (("pilot worker settlement blocked", "pilot issue changed"), "Todo", 0, 1),
@@ -288,10 +300,20 @@ def verify_case(args, mode, root, server, log):
     elif mode == "codex-invalid":
         assert (workspace / "normalize.sed").read_text() == VERSION_NORMALIZER.splitlines(keepends=True)[0]
         assert not (workspace / "artifact.log").exists()
+    elif server.fixture.api:
+        assert json.loads((workspace / "availability.json").read_text()) == API_ROUTE
+        assert daemon_output.count("provider=gemini phase=demo client=bruno") == 1
+        if mode == "api":
+            assert "### Bruno API demos" in server.fixture.description
+            assert "https://uploads.linear.app/fixture/available.mp4" in server.fixture.description
+            assert "https://uploads.linear.app/fixture/missing.mp4" in server.fixture.description
+            assert "curl -i http://127.0.0.1:8767/api/items/NOTEBOOK-01/availability" in server.fixture.description
 
     restarted = start_daemon(args.binary, workflow, port, log)
     try:
         after_restart = "pilot parked after restart" if parked else reason
+        if mode == "api-demo-failed":
+            after_restart = "pilot review transition unconfirmed"
         await_blocked(restarted, port, after_restart, state)
     finally:
         stop_daemon(restarted)
@@ -310,20 +332,55 @@ def verify_case(args, mode, root, server, log):
 def write_provider_stubs(root, mode):
     binary_dir = root / "bin"
     binary_dir.mkdir()
+    api = mode.startswith("api")
     source = VERSION_NORMALIZER + "w artifact.log\n" if mode == "codex-invalid" else VERSION_NORMALIZER
+    if api:
+        source = json.dumps(API_ROUTE, indent=2) + "\n"
     codex_result = {"type": "item.completed", "item": {
         "type": "agent_message", "text": json.dumps({"source": source}),
     }}
-    multi = mode.startswith("multi")
+    multi = api or mode.startswith("multi")
     write_provider_stub(binary_dir / "codex", PLAN if multi else "Acceptance criteria:", codex_result)
     if multi:
-        write_provider_stub(binary_dir / "agy", "Plan a change", {"event": "result", "result": {
+        plan_result = {"event": "result", "result": {
             "status": "SUCCESS", "structured_output": {"summary": PLAN},
-        }})
+        }}
+        if api:
+            write_api_stubs(binary_dir, plan_result, mode)
+        else:
+            write_provider_stub(binary_dir / "agy", "Plan a change", plan_result)
         verdict = "changes_requested" if mode == "multi-rejected" else "approved"
-        write_provider_stub(binary_dir / "claude", "diff --git a/normalize.sed b/normalize.sed", {
+        file = "availability.json" if api else "normalize.sed"
+        write_provider_stub(binary_dir / "claude", f"diff --git a/{file} b/{file}", {
             "type": "result", "is_error": False, "structured_output": {"verdict": verdict, "summary": REVIEW_SUMMARY},
         })
+
+
+def write_api_stubs(binary_dir, plan_result, mode):
+    demo_result = {"event": "result", "result": {"status": "SUCCESS", "structured_output": {
+        "first": "missing", "emphasis": "body", "hold_seconds": 5,
+    }}}
+    agy = binary_dir / "agy"
+    agy.write_text(f"""#!/bin/sh
+set -eu
+test -z "${{LINEAR_API_KEY-}}"
+if grep -Fq 'actual Bruno API client'; then
+  printf '%s\\n' {shlex.quote(json.dumps(demo_result))}
+else
+  printf '%s\\n' {shlex.quote(json.dumps(plan_result))}
+fi
+""")
+    agy.chmod(0o700)
+    outcome = "exit 7" if mode == "api-demo-failed" else r'''printf '{"type":"demo","result":{"diff_sha256":"%s","available":"https://uploads.linear.app/fixture/available.mp4","missing":"https://uploads.linear.app/fixture/missing.mp4"}}\n' "$2"'''
+    demo = binary_dir / "bruno-demo"
+    demo.write_text(f"""#!/bin/sh
+set -eu
+test -z "${{LINEAR_API_KEY-}}"
+test -f "$1/availability.json"
+grep -Fq '"first":"missing"'
+{outcome}
+""")
+    demo.chmod(0o700)
 
 
 def write_provider_stub(path, expected_prompt, result):
@@ -370,10 +427,14 @@ def main():
     parser.add_argument("--binary", type=Path, default=Path("bin/symphony"))
     parser.add_argument("--socket", required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--api-image", help="Optional pinned Python image for the API demo cases")
     args = parser.parse_args()
     args.binary = args.binary.resolve()
     for mode in ("normal", "codex", "codex-invalid", "multi", "multi-rejected", "lost-ack-applied", "lost-ack-active", "edited", "crash"):
         run_case(args, mode)
+    if args.api_image:
+        for mode in ("api", "api-demo-failed"):
+            run_case(args, mode)
 
 
 if __name__ == "__main__":

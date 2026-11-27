@@ -32,6 +32,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.InternalContainerWorker,
           SymphonyElixir.InternalDispatch,
           SymphonyElixir.InternalPilot,
+          SymphonyElixir.InternalPilotInventory,
           SymphonyElixir.InternalPilotProviders,
           SymphonyElixir.InternalPilotRepository,
           SymphonyElixir.Linear.InternalPilot,

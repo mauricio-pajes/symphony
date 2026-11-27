@@ -13,6 +13,7 @@ defmodule SymphonyElixir.InternalPilot do
   alias SymphonyElixir.AgentRouter.Request
   alias SymphonyElixir.{InternalAdmission, InternalDispatch, InternalWorkflow}
   alias SymphonyElixir.InternalContainerWorker, as: Worker
+  alias SymphonyElixir.InternalPilotInventory, as: Inventory
   alias SymphonyElixir.InternalPilotProviders, as: Providers
   alias SymphonyElixir.InternalPilotRepository, as: Repository
   alias SymphonyElixir.Jira.Client, as: Jira
@@ -24,6 +25,7 @@ defmodule SymphonyElixir.InternalPilot do
   @expected "fixture-response\n"
   @review "Human Review"
   @start_states ["todo", "to do"]
+  @independent_modes [:multi_agent, :api_demo]
   @phase_specs %{
     planning: {:gemini, :research, "test ! -e result.txt"},
     implementation: {:codex, :implement, "printf 'fixture-response\\n' > result.txt"},
@@ -43,6 +45,8 @@ defmodule SymphonyElixir.InternalPilot do
     :plan,
     :proposal,
     :review,
+    :demo_runner,
+    :demo_evidence,
     :item,
     :source,
     :run,
@@ -58,8 +62,9 @@ defmodule SymphonyElixir.InternalPilot do
   def validate(%{agent: %{internal_pilot: nil}}), do: :ok
 
   def validate(%{agent: %{internal_pilot: pilot}, tracker: tracker, workspace: workspace, worker: worker}) do
-    with true <- Map.get(pilot, "implementation", "fixture") in ["fixture", "codex", "multi_agent"],
-         settings = Map.delete(pilot, "implementation"),
+    with mode when mode in ["fixture", "codex", "multi_agent", "api_demo"] <- Map.get(pilot, "implementation", "fixture"),
+         true <- demo_runner?(mode, Map.fetch(pilot, "demo_runner")),
+         settings = Map.drop(pilot, ["implementation", "demo_runner"]),
          true <- map_size(settings) == 5,
          %{
            "issue_id" => issue,
@@ -99,7 +104,8 @@ defmodule SymphonyElixir.InternalPilot do
         worker: worker,
         workspace: Path.join(root, "pilot@" <> scope.issue_id),
         image: settings["image"],
-        mode: pilot_mode(settings["implementation"])
+        mode: pilot_mode(settings["implementation"]),
+        demo_runner: settings["demo_runner"]
       }
 
       {:ok, recover_at_start(pilot)}
@@ -122,6 +128,12 @@ defmodule SymphonyElixir.InternalPilot do
     pilot = %{pilot | task: nil}
 
     case result do
+      {:demo, {:ok, evidence}} when pilot.mode == :api_demo ->
+        accept_demo(pilot, evidence, config)
+
+      {:demo, {:error, reason}} when is_atom(reason) ->
+        stop(pilot, reason)
+
       {:provider, phase, {:ok, response}} when phase == pilot.run.phase and is_nil(pilot.prepared) ->
         accept_provider_response(pilot, phase, response, config)
 
@@ -137,6 +149,14 @@ defmodule SymphonyElixir.InternalPilot do
   end
 
   def worker_result(pilot, _ref, _result, _config), do: pilot
+
+  defp accept_demo(pilot, evidence, config) do
+    if pinned(config) == pilot.config do
+      advance_review(%{pilot | demo_evidence: evidence})
+    else
+      stop(pilot, :pilot_configuration_changed)
+    end
+  end
 
   defp accept_provider_response(pilot, phase, response, config) do
     if pinned(config) == pilot.config do
@@ -230,6 +250,7 @@ defmodule SymphonyElixir.InternalPilot do
   defp running_phase(%{prepared: nil, run: %{phase: :planning}}), do: {:gemini, "Gemini is planning"}
   defp running_phase(%{prepared: nil, run: %{phase: :implementation}}), do: {:codex, "Codex is preparing the implementation"}
   defp running_phase(%{prepared: nil, run: %{phase: :review}}), do: {:claude, "Claude Code is reviewing the diff"}
+  defp running_phase(%{prepared: nil, run: %{phase: :human_review}}), do: {:gemini, "Gemini is producing the Bruno demos"}
 
   defp running_phase(%{prepared: prepared}) do
     {prepared.decision.target.provider, "Internal phase: #{prepared.attempt.phase}"}
@@ -240,6 +261,8 @@ defmodule SymphonyElixir.InternalPilot do
 
     cond do
       review_observed?(pilot) -> confirm_review(pilot)
+      pilot.reason == :pilot_demo_pending and eligible?(pilot, item) -> launch_demo(pilot, supervisor)
+      pilot.reason == :pilot_demo_pending -> stop(pilot, :pilot_issue_changed)
       pilot.reason != nil -> pilot
       eligible?(pilot, item) -> dispatch_observed(pilot, supervisor)
       pilot.source != nil -> stop(pilot, :pilot_issue_changed)
@@ -302,24 +325,26 @@ defmodule SymphonyElixir.InternalPilot do
   end
 
   defp seed_workspace(%{mode: :fixture}), do: :ok
-  defp seed_workspace(%{workspace: workspace}), do: Repository.seed(workspace)
+  defp seed_workspace(%{workspace: workspace, mode: mode}), do: Repository.seed(workspace, mode)
 
-  defp launch_phase(%{mode: :multi_agent, run: %{phase: :planning}, plan: nil, workspace: workspace} = pilot, supervisor) do
-    launch_provider(pilot, supervisor, :gemini, fn -> Providers.plan(workspace) end)
+  defp launch_phase(%{mode: mode, run: %{phase: :planning}, plan: nil, workspace: workspace} = pilot, supervisor)
+       when mode in @independent_modes do
+    launch_provider(pilot, supervisor, :gemini, fn -> Providers.plan(workspace, mode) end)
   end
 
   defp launch_phase(%{mode: mode, run: %{phase: :implementation}, proposal: nil, workspace: workspace} = pilot, supervisor)
-       when mode in [:codex, :multi_agent] do
+       when mode in [:codex | @independent_modes] do
     plan_summary = if pilot.plan, do: pilot.plan.summary
-    launch_provider(pilot, supervisor, :codex, fn -> Repository.propose(workspace, plan_summary) end)
+    launch_provider(pilot, supervisor, :codex, fn -> Repository.propose(workspace, plan_summary, mode) end)
   end
 
-  defp launch_phase(%{mode: :multi_agent, run: %{phase: :review, artifact: %{revision: revision}}, review: nil} = pilot, supervisor) do
+  defp launch_phase(%{mode: mode, run: %{phase: :review, artifact: %{revision: revision}}, review: nil} = pilot, supervisor)
+       when mode in @independent_modes do
     workspace = pilot.workspace
 
-    case Repository.artifact(workspace) do
+    case Repository.artifact(workspace, mode) do
       {:ok, %{revision: ^revision} = artifact} ->
-        launch_provider(pilot, supervisor, :claude, fn -> Providers.review(workspace, artifact) end)
+        launch_provider(pilot, supervisor, :claude, fn -> Providers.review(workspace, artifact, mode) end)
 
       _changed ->
         stop(pilot, :pilot_review_artifact_changed)
@@ -349,6 +374,13 @@ defmodule SymphonyElixir.InternalPilot do
     %{pilot | prepared: nil, task: task, started_at: DateTime.utc_now()}
   end
 
+  defp launch_demo(pilot, supervisor) do
+    %{workspace: workspace, demo_runner: runner, run: %{artifact: %{revision: revision}}} = pilot
+    task = Task.Supervisor.async_nolink(supervisor, fn -> {:demo, Providers.demo(workspace, revision, runner)} end)
+    log(pilot, "started authenticated provider=gemini phase=demo client=bruno")
+    %{pilot | prepared: nil, task: task, started_at: DateTime.utc_now(), reason: nil}
+  end
+
   defp settle_observed(pilot, observed, config) do
     with true <- pinned(config) == pilot.config,
          {:ok, item} <- Linear.read(pilot.scope),
@@ -362,8 +394,12 @@ defmodule SymphonyElixir.InternalPilot do
   end
 
   defp advance(pilot, :dispatch), do: pilot
+  defp advance(%{mode: :api_demo} = pilot, {:park, :human_review}), do: %{pilot | reason: :pilot_demo_pending}
+  defp advance(pilot, {:park, :human_review}), do: advance_review(pilot)
+  defp advance(pilot, {:park, reason}), do: %{pilot | reason: reason}
+  defp advance(pilot, :retry), do: stop(pilot, :pilot_retry_requires_inspection)
 
-  defp advance(pilot, {:park, :human_review}) do
+  defp advance_review(pilot) do
     # Park first and re-read before the sole mutation attempt.
     with {:ok, item} <- Linear.read(pilot.scope),
          true <- eligible?(pilot, item),
@@ -384,9 +420,6 @@ defmodule SymphonyElixir.InternalPilot do
       _changed -> %{pilot | reason: :pilot_review_source_changed}
     end
   end
-
-  defp advance(pilot, {:park, reason}), do: %{pilot | reason: reason}
-  defp advance(pilot, :retry), do: stop(pilot, :pilot_retry_requires_inspection)
 
   defp confirm_review(pilot) do
     scope = journal_scope(pilot)
@@ -410,10 +443,11 @@ defmodule SymphonyElixir.InternalPilot do
   defp verify_review_observation(%{mode: :fixture}, _record), do: :ok
 
   defp verify_review_observation(pilot, %{status: status}) when status in [:review_pending, :human_review] do
-    with {:ok, artifact} <- Repository.artifact(pilot.workspace),
+    with {:ok, artifact} <- Repository.artifact(pilot.workspace, pilot.mode),
          body when is_binary(body) <- pilot.item.issue.description,
          true <- Repository.review_observed?(body, artifact),
-         true <- pilot.mode != :multi_agent or Providers.observed?(body, artifact.revision) do
+         true <- pilot.mode not in @independent_modes or Providers.observed?(body, artifact.revision),
+         true <- pilot.mode != :api_demo or Inventory.demos_observed?(body) do
       :ok
     else
       _unconfirmed -> {:error, :pilot_review_evidence_unconfirmed}
@@ -426,26 +460,28 @@ defmodule SymphonyElixir.InternalPilot do
 
   defp review_description(%{run: %{artifact: %{revision: revision}}} = pilot, %{issue: %{description: description}})
        when is_binary(description) do
-    case Repository.artifact(pilot.workspace) do
-      {:ok, %{revision: ^revision} = artifact} ->
-        provider_evidence = if pilot.mode == :multi_agent, do: Providers.evidence(pilot.plan, pilot.review), else: ""
-        {:ok, Repository.review_description(description, artifact, provider_evidence)}
-
-      _unverified ->
-        {:error, :codex_pilot_unverified_artifact}
+    with {:ok, %{revision: ^revision} = artifact} <- Repository.artifact(pilot.workspace, pilot.mode),
+         {:ok, demo} <- demo_description(pilot, revision) do
+      provider = if pilot.mode in @independent_modes, do: Providers.evidence(pilot.plan, pilot.review), else: ""
+      {:ok, Repository.review_description(description, artifact, provider <> demo, pilot.mode)}
+    else
+      _unverified -> {:error, :codex_pilot_unverified_artifact}
     end
   end
 
   defp review_description(_pilot, _item), do: {:error, :codex_pilot_unverified_artifact}
+  defp demo_description(%{mode: :api_demo, demo_evidence: evidence}, revision), do: Inventory.demos(evidence, revision)
+  defp demo_description(_pilot, _revision), do: {:ok, ""}
 
-  defp verify(%{mode: :multi_agent, run: %{phase: :planning, requirements_revision: requirements}, plan: %{revision: plan}}),
-    do: {:planning, requirements, "gemini-plan:" <> plan, [criterion(:multi_agent)]}
+  defp verify(%{mode: mode, run: %{phase: :planning, requirements_revision: requirements}, plan: %{revision: plan}})
+       when mode in @independent_modes,
+       do: {:planning, requirements, "gemini-plan:" <> plan, [criterion(mode)]}
 
   defp verify(%{mode: mode, run: %{phase: :planning, requirements_revision: revision}}),
     do: {:planning, revision, "jira:" <> jira_key(mode), [criterion(mode)]}
 
-  defp verify(%{mode: mode, workspace: workspace} = pilot) when mode in [:codex, :multi_agent] do
-    case Repository.artifact(workspace) do
+  defp verify(%{mode: mode, workspace: workspace} = pilot) when mode in [:codex | @independent_modes] do
+    case Repository.artifact(workspace, mode) do
       {:ok, artifact} -> verify_repository(pilot, artifact)
       {:error, _reason} -> nil
     end
@@ -518,19 +554,19 @@ defmodule SymphonyElixir.InternalPilot do
     %{request: request, profiles: [profile], availability: availability, command_for: fn _target -> {:ok, command} end}
   end
 
-  defp profile_model(:multi_agent, :planning), do: Providers.gemini_model()
-  defp profile_model(:multi_agent, :review), do: "claude"
-  defp profile_model(mode, :implementation) when mode in [:codex, :multi_agent], do: "codex"
+  defp profile_model(mode, :planning) when mode in @independent_modes, do: Providers.gemini_model()
+  defp profile_model(mode, :review) when mode in @independent_modes, do: "claude"
+  defp profile_model(mode, :implementation) when mode in [:codex | @independent_modes], do: "codex"
   defp profile_model(_mode, _phase), do: "fixture"
 
-  defp phase_command(%{mode: :multi_agent, run: %{phase: phase}, image: image, proposal: proposal}) do
+  defp phase_command(%{mode: mode, run: %{phase: phase}, image: image, proposal: proposal}) when mode in @independent_modes do
     {provider, capability, _script} = Map.fetch!(@phase_specs, phase)
-    {provider, capability, Repository.command(phase, image, proposal)}
+    {provider, capability, Repository.command(phase, image, proposal, mode)}
   end
 
   defp phase_command(%{mode: :codex, run: %{phase: phase}, image: image, proposal: proposal}) do
     {_provider, capability, _script} = Map.fetch!(@phase_specs, phase)
-    {:codex, capability, Repository.command(phase, image, proposal)}
+    {:codex, capability, Repository.command(phase, image, proposal, :codex)}
   end
 
   defp phase_command(%{run: %{phase: phase}, image: image}) do
@@ -545,18 +581,26 @@ defmodule SymphonyElixir.InternalPilot do
   defp jira_description?(_body, _url), do: false
   defp pilot_mode("codex"), do: :codex
   defp pilot_mode("multi_agent"), do: :multi_agent
+  defp pilot_mode("api_demo"), do: :api_demo
   defp pilot_mode(_default), do: :fixture
   defp jira_url(mode), do: @jira_origin <> "/browse/" <> jira_key(mode)
   defp jira_key(:fixture), do: "PILOT-1"
   defp jira_key(:codex), do: "PILOT-2"
   defp jira_key(:multi_agent), do: "PILOT-3"
+  defp jira_key(:api_demo), do: "PILOT-4"
   defp criterion(:fixture), do: @criteria
+  defp criterion(:api_demo), do: "inventory-availability-contract"
   defp criterion(_repository_mode), do: "version-label-normalization"
   defp policy_revision(:fixture), do: "synthetic-linear-v1"
   defp policy_revision(:codex), do: "personal-codex-v1"
   defp policy_revision(:multi_agent), do: "personal-multi-agent-v1"
+  defp policy_revision(:api_demo), do: "personal-api-demo-v1"
   defp jira_requirements(:fixture), do: @requirements
-  defp jira_requirements(_repository_mode), do: Repository.requirements()
+  defp jira_requirements(repository_mode), do: Repository.requirements(repository_mode)
+
+  defp demo_runner?("api_demo", {:ok, path}), do: absolute?(path)
+  defp demo_runner?(mode, :error), do: mode != "api_demo"
+  defp demo_runner?(_mode, _setting), do: false
 
   defp fetch_jira(link, mode) do
     key = jira_key(mode)

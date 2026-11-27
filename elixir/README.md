@@ -286,6 +286,42 @@ The local integration fixture verifies the handoffs and both review verdicts
 using CLI stubs. See the [multi-agent pilot ADR](../docs/adr-0009-personal-multi-agent-pilot.md)
 for the provider boundary and the verified live run.
 
+#### Stockroom API and Bruno pilot
+
+Use `https://jira.fixture.test/browse/PILOT-4` as the description of a fresh,
+scoped Linear test issue. The daemon seeds a standalone [Stockroom inventory
+project](priv/pilot/inventory/README.md) and adds a GET availability contract
+while preserving the catalog. Use the same three authenticated provider CLIs.
+Configure `agent.internal_pilot` as in the previous example, with these changes:
+
+```yaml
+agent:
+  internal_pilot:
+    implementation: api_demo
+    image: "sha256:<local Python 3.12 Alpine image ID>"
+    demo_runner: /absolute/path/to/elixir/test/support/bruno_demo/run.py
+```
+
+The optional desktop executor requires macOS 15 or later on Apple Silicon,
+Bruno open in an English-language window, existing Accessibility and Screen
+Recording access, Xcode command-line tools, Git, Python 3.9 or later and
+FFmpeg. The sample uploader reads the previously configured
+`symphony-linear-personal-pilot` Keychain entry. Keep the Bruno window free
+while the daemon runs the demo. The local API binds only to port 8767 on
+loopback. The executor stores verified MP4s in `~/Downloads/Symphony-Stockroom-qa-evidence/`.
+
+After Claude approves the diff, Gemini chooses the order and focus of two
+short Bruno recordings. The executor verifies the real HTTP results and the
+captured status and body, uploads the clips privately, and returns links
+bound to the reviewed diff. Linear receives both videos, cURL commands,
+the checked test results and the review in the Human Review update. Failed
+recording or upload leaves the scoped ticket in Todo for inspection.
+
+For a local regression run, add `--api-image <local Python image ID>` to
+the fixture command above. The regression suite uses desktop stubs and
+checks the demonstration gate without touching Bruno or uploading anything.
+See the [Stockroom demo ADR](../docs/adr-0010-stockroom-api-demo.md).
+
 ### Isolated internal phase fixture
 
 The opt-in test routes a synthetic item through planning, implementation,

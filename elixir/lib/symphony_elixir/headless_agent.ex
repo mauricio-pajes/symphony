@@ -140,6 +140,9 @@ defmodule SymphonyElixir.HeadlessAgent do
   defp parse_result(:claude_review, {:ok, %{"type" => "result", "is_error" => false, "structured_output" => result}}, _previous)
        when is_map(result), do: {:ok, Jason.encode!(result)}
 
+  defp parse_result(:demo_runner, {:ok, %{"type" => "demo", "result" => result}}, _previous)
+       when is_map(result), do: {:ok, Jason.encode!(result)}
+
   defp parse_result(:gemini, {:ok, %{"event" => "result", "result" => %{"status" => "SUCCESS", "response" => result}}}, _previous)
        when is_binary(result), do: {:ok, result}
 

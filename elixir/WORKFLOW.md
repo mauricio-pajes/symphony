@@ -33,6 +33,7 @@ agent:
   # Configure internal_pilot in a separate workflow for a single synthetic issue.
   # Set internal_pilot.implementation to codex to enable the authenticated PILOT-2 fixture.
   # Use multi_agent with the PILOT-3 fixture for Gemini, Codex and Claude Code.
+  # Use api_demo with PILOT-4 and a trusted, absolute demo_runner path for the Stockroom example.
   # See README.md#synthetic-linear-to-human-review-pilot.
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
