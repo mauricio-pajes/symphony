@@ -42,6 +42,7 @@ does not authorize sending work material.
 | Antigravity | Updated standalone CLI to 1.5.18 and verified the approved personal identity and presence of quota metadata through its interactive status-line hook. A live synthetic Neon Low turn returned NDJSON with success, a schema-matching `structured_output` and usage metadata. The current parser's success predicate matches the terminal event. It reads the text response and discards the separate structured field. This was a direct CLI check outside Symphony. |
 | Terminal client | The separate Go console uses the existing GET endpoints, displays observed provider activity, and supports optional local PNGs. A synthetic OTP daemon supplies the demo data. |
 | Routing and workflow components | The deterministic router evaluates scoped profile eligibility, capacity, independence and affinity. A combined test passes verified artifacts and criterion evidence across internal phases and parks at Human Review. The legacy scheduler remains in use. |
+| Durable admission | The single-scheduler journal records launch reservations and matches boot IDs and generations before attachment. Reopening it preserves unresolved leases and requires trusted reconciliation before reuse. Its integration with the production launcher is pending. |
 
 Routed headless providers now enforce an elapsed-time budget even while
 emitting progress. The local deadline test also checks that a background
@@ -50,6 +51,9 @@ discards headless results before deciding continuation, and the legacy
 successful-exit path can revisit an unchanged active ticket. Before enabling
 internal dispatch, bind typed outcomes to the durable lease and prove that
 draining an attempt precedes workspace reuse across host cancellation and restart.
+A macOS fixture demonstrated the restart case: a background child wrote after
+the BEAM running its headless parent was forcibly terminated. A worker's
+BEAM monitor is therefore insufficient to prove that its descendants stopped.
 
 ## Comparison with a Codex-only workflow
 

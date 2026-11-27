@@ -51,10 +51,17 @@ If ownership or exit cannot be verified, quarantine that workspace and surface
 an intervention. Issue an explicit new run authorization before replacing a
 closed run. Reject late events from previous run or boot IDs.
 
+The admission journal uses a bounded, versioned JSON file in a private, separate
+state directory. One scheduler owns updates. Each update flushes a temporary file
+in that directory, atomically replaces the ledger, and flushes the directory.
+Deployment must enforce a single owner across BEAM instances. Reserving an attempt
+and attaching its process identity remain separate so a crash between the operations
+leaves a record to reconcile. The store consumes proof supplied by a trusted launcher.
+
 Introduce full durable checkpoints and an effect journal before enabling
-automated external writes. Evaluate single-host SQLite with WAL as a shared store
-for these records and the initial admission ledger. Include migrations and startup
-reconciliation. Keep phase progress outside the workspace and use
+automated external writes. Evaluate single-host SQLite with WAL when those
+records need transactions across checkpoints and effects. Include migrations
+and startup reconciliation. Keep phase progress outside the workspace and use
 the tracker for eligibility. Recovery checks observed tracker state, approved
 requirement hash and workspace revision, current permission and policy.
 A changed requirement returns to intake, an inactive ticket remains parked,
