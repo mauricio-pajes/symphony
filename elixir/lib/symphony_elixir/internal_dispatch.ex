@@ -71,19 +71,22 @@ defmodule SymphonyElixir.InternalDispatch do
     end
   end
 
-  @doc "Drains and parks an attached lease from the journal during cancellation or boot recovery."
+  @doc "Drains and parks a verified lease from the journal during cancellation or boot recovery."
   @spec recover(Worker.t(), InternalAdmission.t(), InternalAdmission.scope()) :: :ok | {:error, term()}
   def recover(worker, journal, scope) do
-    with {:ok, %{run_id: run_id, lease: %{boot_id: boot_id, generation: generation, process_identity: identity}}}
-         when is_binary(identity) <- InternalAdmission.lookup(journal, scope),
+    with {:ok, %{run_id: run_id, lease: %{boot_id: boot_id, generation: generation, process_identity: identity}}} <-
+           InternalAdmission.lookup(journal, scope),
          attempt_id = {run_id, boot_id, generation},
-         {:ok, proof} <- Worker.drain(worker, attempt_id, identity) do
+         {:ok, proof} <- recovery_proof(worker, attempt_id, identity) do
       InternalAdmission.finish(journal, scope, attempt_id, proof, :parked)
     else
-      {:ok, _record} -> {:error, :no_attached_lease}
+      {:ok, _record} -> {:error, :no_lease}
       error -> error
     end
   end
+
+  defp recovery_proof(worker, attempt_id, nil), do: Worker.drain_pending(worker, attempt_id)
+  defp recovery_proof(worker, attempt_id, identity), do: Worker.drain(worker, attempt_id, identity)
 
   defp request(%Request{scope: %{project: project} = scope} = request, %{project_id: project} = attempt, workspace_id) do
     access = if attempt.write_mode == :workspace_write, do: :write, else: :read

@@ -28,9 +28,11 @@ root and run, boot and attempt generation.
    absence on the same engine. It then asks a trusted verifier to check the
    workspace evidence, applies the reducer and persists the disposition.
 5. On cancellation or restart, the scheduler can reconcile an attached
-   lease and park the run. Ambiguous creation without a recorded container
-   ID requires trusted reconciliation. A changed or unavailable engine
-   retains the lease until the correct engine can settle it.
+   lease and park the run. An unattached reservation can be reconciled
+   after observing and removing the matching stopped container by name
+   and label. In the absence of that evidence, the reservation stays
+   unresolved. A changed or unavailable engine retains the attached
+   lease until the correct engine can settle it.
 
 The command is built by trusted host code from a locally present image
 pinned by SHA-256 ID. The container gets a single non-recursive workspace
@@ -65,6 +67,9 @@ checks the writer and reader mounts, and verifies that Human Review stays
 parked after reopening the journal. A second fixture times out and kills an
 independent BEAM process while a container descendant remains active. A new
 boot is unable to reserve a writer until the old container is drained.
+A third fixture covers a stopped container whose create acknowledgement
+was lost and the absence of a matching observation before recovery.
+The Docker tests run separately from the default coverage gate.
 The fixture uses BusyBox commands and synthetic artifacts. Authenticated
 provider execution and external tracker effects require their own gates.
 

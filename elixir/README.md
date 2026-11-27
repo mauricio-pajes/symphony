@@ -200,6 +200,8 @@ It binds each selected phase to a durable reservation, runs a shell command
 in an isolated local Docker container, and parks the item at Human Review.
 It also demonstrates a surviving container descendant after the worker
 BEAM exits and verifies recovery before the workspace can be reused.
+A separate case recovers a stopped container after a lost create
+acknowledgement.
 
 Run from `elixir/` with a trusted local Linux Docker Engine. Set its Unix
 socket path and the ID of an installed BusyBox image.

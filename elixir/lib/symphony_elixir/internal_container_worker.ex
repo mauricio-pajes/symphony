@@ -73,7 +73,7 @@ defmodule SymphonyElixir.InternalContainerWorker do
       when is_integer(timeout) and timeout in 1..@max_wait_ms do
     with {:ok, id} <- container_id(worker, identity),
          :ok <- check_engine(worker),
-         {:ok, :created} <- inspect_container(worker, attempt_id, id),
+         {:ok, {:created, ^id}} <- inspect_container(worker, attempt_id, id),
          {:ok, _response} <- request(worker.socket, :post, "/containers/" <> id <> "/start", 204),
          {:ok, %{"StatusCode" => status} = result} when is_integer(status) and status >= 0 <-
            request(worker.socket, :post, "/containers/" <> id <> "/wait?condition=not-running", 200, receive_timeout: timeout),
@@ -81,7 +81,7 @@ defmodule SymphonyElixir.InternalContainerWorker do
       {:ok, status}
     else
       {:ok, :absent} -> {:error, :container_missing}
-      {:ok, :present} -> {:error, :container_already_started}
+      {:ok, {:present, _id}} -> {:error, :container_already_started}
       {:error, reason} -> {:error, reason}
       _invalid -> {:error, :invalid_container_exit}
     end
@@ -105,6 +105,23 @@ defmodule SymphonyElixir.InternalContainerWorker do
       {:ok, {:process_tree_drained, identity}}
     else
       {:ok, _present} -> {:error, :container_still_present}
+      error -> error
+    end
+  end
+
+  @doc "Reconciles an unattached reservation only when the matching stopped container is observed."
+  @spec drain_pending(t(), InternalAdmission.attempt_id()) :: {:ok, InternalAdmission.proof()} | {:error, term()}
+  def drain_pending(worker, attempt_id) do
+    name = lease_name(worker, attempt_id)
+
+    with :ok <- check_engine(worker),
+         {:ok, {:created, id}} <- inspect_container(worker, attempt_id, name),
+         :ok <- remove(worker, id, :created),
+         :ok <- check_engine(worker),
+         {:ok, :absent} <- inspect_container(worker, attempt_id, name) do
+      {:ok, :process_tree_absence_verified}
+    else
+      {:ok, _observation} -> {:error, :pending_container_unverified}
       error -> error
     end
   end
@@ -194,15 +211,20 @@ defmodule SymphonyElixir.InternalContainerWorker do
     end
   end
 
-  defp inspect_container(worker, attempt_id, id) do
+  defp inspect_container(worker, attempt_id, identifier) do
     name = lease_name(worker, attempt_id)
 
-    case request(worker.socket, :get, "/containers/" <> id <> "/json", [200, 404]) do
+    case request(worker.socket, :get, "/containers/" <> identifier <> "/json", [200, 404]) do
       {:ok, %{status: 404}} ->
         {:ok, :absent}
 
-      {:ok, %{body: %{"Id" => ^id, "Config" => %{"Labels" => %{@label => ^name}}, "State" => %{"Status" => status}}}} ->
-        {:ok, if(status == "created", do: :created, else: :present)}
+      {:ok, %{body: %{"Id" => id, "Config" => %{"Labels" => %{@label => ^name}}, "State" => %{"Status" => status}}}}
+      when identifier in [id, name] ->
+        if hex_id?(id) do
+          {:ok, {if(status == "created", do: :created, else: :present), id}}
+        else
+          {:error, :invalid_container_identity}
+        end
 
       {:ok, _response} ->
         {:error, :container_binding_mismatch}

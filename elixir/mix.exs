@@ -28,6 +28,9 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Codex.AppServer,
           SymphonyElixir.Codex.DynamicTool,
           SymphonyElixir.HttpServer,
+          # Covered by the opt-in fixture against a real Docker Engine.
+          SymphonyElixir.InternalContainerWorker,
+          SymphonyElixir.InternalDispatch,
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.LogFile,
           SymphonyElixir.Workspace,

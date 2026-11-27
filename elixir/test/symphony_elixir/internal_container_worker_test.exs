@@ -158,6 +158,39 @@ defmodule SymphonyElixir.InternalContainerWorkerTest do
     end
   end
 
+  test "reconciles an observed stopped container after the create acknowledgement is lost", fixture do
+    {:ok, journal} = InternalAdmission.initialize(fixture.state, fixture.workspace_root, @boot)
+    {:ok, workspace_id} = InternalContainerWorker.workspace_id(fixture.worker, fixture.workspace)
+    :ok = InternalAdmission.admit(journal, @scope, "run-1", workspace_id)
+    attempt = {"run-1", @boot, 1}
+    :ok = InternalAdmission.reserve(journal, @scope, attempt)
+
+    {:ok, next_boot} = InternalAdmission.open(fixture.state, fixture.workspace_root, "boot-b")
+    assert {:error, :pending_container_unverified} = InternalDispatch.recover(fixture.worker, next_boot, @scope)
+    assert {:error, :lease_unresolved} = InternalAdmission.reserve(next_boot, @scope, {"run-1", "boot-b", 2})
+
+    {:ok, root} = SymphonyElixir.PathSafety.canonicalize(fixture.workspace_root)
+    digest = :crypto.hash(:sha256, :erlang.term_to_binary({root, attempt}))
+    name = "symphony-phase-" <> Base.encode16(digest, case: :lower)
+    args = ["container", "create", "--name", name, "--label", "io.symphony.phase-lease=" <> name, fixture.image, "true"]
+    {id, 0} = docker(fixture.socket, args)
+    id = String.trim(id)
+
+    try do
+      assert :ok = InternalDispatch.recover(fixture.worker, next_boot, @scope)
+      assert {:ok, %{status: :parked, generation: 1, lease: nil}} = InternalAdmission.lookup(next_boot, @scope)
+      assert {_output, status} = docker(fixture.socket, ["container", "inspect", id])
+      assert status != 0
+    after
+      _ = docker(fixture.socket, ["container", "rm", "--force", id])
+    end
+  end
+
+  defp docker(socket, args) do
+    env = [{"DOCKER_CONTEXT", nil}, {"DOCKER_HOST", nil}, {"DOCKER_API_VERSION", nil}]
+    System.cmd("docker", ["--host", "unix://" <> socket | args], stderr_to_stdout: true, env: env)
+  end
+
   defp external_worker(fixture, %{lease: %{attempt_id: {run, boot, generation}, identity: identity}}) do
     script = ~S"""
     [socket, root, run, boot, generation, identity] = System.argv()
