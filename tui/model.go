@@ -21,7 +21,9 @@ const (
 const initialPollDelay = 2 * time.Second
 
 type pollTick struct{}
-type pulseDone uint64
+type spriteTick uint64
+
+var spriteMotion = [...]int{1, 2, 1}
 
 type pollResult struct {
 	snapshot   snapshot
@@ -37,7 +39,7 @@ type model struct {
 	client  *daemonClient
 	opt     options
 	palette palette
-	assets  map[string][]string
+	assets  artwork
 
 	width       int
 	height      int
@@ -56,8 +58,9 @@ type model struct {
 	lastErr     error
 	pollDelay   time.Duration
 
-	pulse    map[string]bool
-	pulseSeq uint64
+	pulse     map[string]bool
+	pulseSeq  uint64
+	pulseStep int
 }
 
 func newModel(ctx context.Context, client *daemonClient, opt options) model {
@@ -117,10 +120,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(next, pulse)
 		}
 		return m, next
-	case pulseDone:
-		if uint64(msg) == m.pulseSeq {
-			m.pulse = nil
+	case spriteTick:
+		if uint64(msg) != m.pulseSeq || len(m.pulse) == 0 {
+			return m, nil
 		}
+		m.pulseStep++
+		if m.pulseStep < len(spriteMotion) {
+			return m, m.nextSpriteTick()
+		}
+		m.pulse = nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -142,8 +150,8 @@ func (m *model) receivePoll(result pollResult) tea.Cmd {
 		m.pulse = detectActivity(m.tickets, next)
 		if len(m.pulse) > 0 {
 			m.pulseSeq++
-			pulseID := pulseDone(m.pulseSeq)
-			pulse = tea.Tick(420*time.Millisecond, func(time.Time) tea.Msg { return pulseID })
+			m.pulseStep = 0
+			pulse = m.nextSpriteTick()
 		}
 	}
 	m.snapshot = result.snapshot
@@ -156,6 +164,23 @@ func (m *model) receivePoll(result pollResult) tea.Cmd {
 		m.detailErr = result.detailErr
 	}
 	return pulse
+}
+
+func (m model) nextSpriteTick() tea.Cmd {
+	frame := spriteTick(m.pulseSeq)
+	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg { return frame })
+}
+
+func (m model) sprite(provider string) []string {
+	frames := m.assets.sprites[provider]
+	if len(frames) == 0 {
+		return nil
+	}
+	frame := 0
+	if m.pulse[provider] && len(frames) > 1 {
+		frame = spriteMotion[m.pulseStep]
+	}
+	return frames[frame]
 }
 
 func sortedTickets(state snapshot) []ticket {
@@ -204,7 +229,7 @@ func detectActivity(before, after []ticket) map[string]bool {
 			continue
 		}
 		old, exists := previous[t.ID]
-		if !exists || providerKey(old.Provider) != provider || old.Status != t.Status ||
+		if !exists || providerKey(old.Provider) != provider || old.Status != t.Status || old.State != t.State ||
 			old.Session != t.Session || old.LastEvent != t.LastEvent ||
 			t.LastEventAt.After(old.LastEventAt) || old.TurnCount != t.TurnCount {
 			pulse[provider] = true

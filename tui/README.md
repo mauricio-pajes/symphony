@@ -33,12 +33,16 @@ Use `-assets /path/to/assets` to select a different directory.
 | `claude.png` | The original Clawd artwork |
 | `antigravity.png` | The official Antigravity icon |
 
-A supplied sprite is rendered with terminal color cells. Providers without a
-readable asset use compact text labels. A provider's ◆ marker pulses once
-when a new attributed change appears in consecutive current snapshots. The
-initial snapshot and the first snapshot after a reconnect establish
-baselines. The [terminal design](../docs/personal-symphony-tui.md) records
-asset provenance and the wider console scope.
+Ghostty and Kitty use native PNG graphics in the alternate screen. Other
+terminals, multiplexers and inline mode use crisp terminal color cells.
+Use `-graphics cells` to select the cell renderer explicitly. Providers
+without a readable asset use text labels.
+
+New provider activity triggers a short lift and settle of its artwork
+while the surrounding text stays in place. The first snapshot and the
+first snapshot after a reconnect establish baselines. A stale snapshot
+stops motion. The [terminal design](../docs/personal-symphony-tui.md)
+records asset provenance and the wider console scope.
 
 `NO_COLOR=1` selects monochrome. `-ascii` selects monochrome and ASCII
 interface markers. Use `-no-motion` for static indicators,

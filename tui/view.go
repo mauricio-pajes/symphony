@@ -92,7 +92,17 @@ func (m model) header() []string {
 }
 
 func (m model) showStrip() bool {
-	return m.width >= 74 && m.height >= 22
+	return m.width >= 74 && m.height >= m.stripCardHeight()+14
+}
+
+func (m model) stripCardHeight() int {
+	if len(m.assets.sprites) == 0 {
+		return 3
+	}
+	if (m.width-2)/len(providers) < 32 {
+		return artHeight + 3
+	}
+	return artHeight
 }
 
 func (m model) agentStrip() []string {
@@ -105,10 +115,10 @@ func (m model) agentStrip() []string {
 		if index == len(providers)-1 {
 			width = m.width - 2 - 2*cardWidth
 		}
-		cards[index] = m.providerCard(provider, width)
+		cards[index] = m.providerCard(provider, width, m.stripCardHeight())
 	}
 	lines := []string{horizontal}
-	for y := range artHeight {
+	for y := range m.stripCardHeight() {
 		var row []string
 		for _, card := range cards {
 			row = append(row, card[y])
@@ -118,30 +128,49 @@ func (m model) agentStrip() []string {
 	return append(lines, horizontal)
 }
 
-func (m model) providerCard(provider providerInfo, width int) []string {
-	art := m.assets[provider.key]
+func (m model) providerCard(provider providerInfo, width, height int) []string {
+	art := m.sprite(provider.key)
 	if len(art) == 0 {
 		art = make([]string, artHeight)
-		art[2] = m.paint("["+provider.abbreviation+"]", m.palette.accent, nil, true)
+		art[artHeight/2] = m.center("["+provider.abbreviation+"]", artWidth)
 	}
-	marker, tone := " ", m.palette.muted
+	tone := m.palette.muted
 	if m.pulse[provider.key] {
-		marker, tone = m.glyph("◆", "*"), m.palette.accent
+		tone = m.palette.accent
 	}
 	status, modelLabel := m.providerStatus(provider.key)
 	labels := []string{
-		"",
-		m.paint(marker+" "+provider.name, m.palette.text, nil, true),
+		m.paint(provider.name, m.palette.text, nil, true),
 		m.paint(status, tone, nil, false),
 		m.paint(modelLabel, m.palette.muted, nil, false),
-		"",
 	}
-	rows := make([]string, artHeight)
+	rows := make([]string, height)
+	if height != artHeight {
+		if height > len(labels) {
+			for y, line := range art {
+				rows[y] = m.center(line, width)
+			}
+		}
+		for y, label := range labels {
+			rows[height-len(labels)+y] = m.center(label, width)
+		}
+		return rows
+	}
+
+	firstLabel := (artHeight - len(labels)) / 2
 	for y := range rows {
-		prefix := " " + m.pad(art[y], artWidth) + " "
-		rows[y] = m.pad(prefix+labels[y], width)
+		line := " " + m.pad(art[y], artWidth) + " "
+		if index := y - firstLabel; index >= 0 && index < len(labels) {
+			line += labels[index]
+		}
+		rows[y] = m.pad(line, width)
 	}
 	return rows
+}
+
+func (m model) center(line string, width int) string {
+	line = m.clip(line, width)
+	return m.pad(strings.Repeat(" ", (width-ansi.StringWidth(line))/2)+line, width)
 }
 
 func (m model) providerStatus(provider string) (string, string) {
@@ -152,7 +181,7 @@ func (m model) providerStatus(provider string) (string, string) {
 		}
 	}
 	if len(active) == 0 {
-		return "No observed session", ""
+		return "No session", ""
 	}
 	if len(active) > 1 {
 		return fmt.Sprintf("%d observed tickets", len(active)), ""
@@ -182,7 +211,7 @@ func (m model) bodyHeight() int {
 		height -= 2
 	}
 	if m.showStrip() {
-		height -= artHeight + 2
+		height -= m.stripCardHeight() + 2
 	}
 	if m.showFilter() {
 		height--
@@ -351,8 +380,8 @@ func (m model) issueLines(width int) []string {
 func (m model) agentLines(width int) []string {
 	lines := []string{m.sectionHeading("AGENT AVAILABILITY", width), ""}
 	for _, provider := range providers {
-		if !m.showStrip() && len(m.assets[provider.key]) > 0 {
-			lines = append(lines, m.providerCard(provider, width)...)
+		if !m.showStrip() && len(m.assets.sprites[provider.key]) > 0 {
+			lines = append(lines, m.providerCard(provider, width, artHeight)...)
 		} else {
 			status, _ := m.providerStatus(provider.key)
 			lines = append(lines, m.paint("  "+provider.name, m.palette.accent, nil, true))

@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	artWidth      = 9
-	artHeight     = 5
+	artWidth      = 14
+	artHeight     = 7
+	spriteSize    = 224
 	maxAssetBytes = 1 << 20
 )
 
@@ -26,6 +27,12 @@ var providers = [...]providerInfo{
 	{"codex", "Codex", "CX", "codex.png"},
 	{"claude", "Claude Code", "CC", "claude.png"},
 	{"gemini", "Antigravity", "AG", "antigravity.png"},
+}
+
+type artwork struct {
+	sprites map[string][][]string
+	load    string
+	clear   string
 }
 
 func providerKey(key string) string {
@@ -46,21 +53,66 @@ func providerName(key string) string {
 	return "Unreported provider"
 }
 
-func providerAssets(opt options) map[string][]string {
-	visuals := make(map[string][]string)
+func providerAssets(opt options) artwork {
+	result := artwork{sprites: make(map[string][][]string)}
 	if opt.assets == "" || opt.monochrome {
-		return visuals
+		return result
 	}
+
+	id := firstImageID()
+	var load, clear strings.Builder
+	lifts := []int{0, 10, 20}
+	if opt.noMotion {
+		lifts = lifts[:1]
+	}
+
 	for _, provider := range providers {
-		file := filepath.Join(opt.assets, provider.image)
-		if art := loadArt(file); art != nil {
-			visuals[provider.key] = art
+		original := loadArt(filepath.Join(opt.assets, provider.image))
+		if original == nil {
+			continue
 		}
+		bounds := visibleBounds(original)
+		if bounds.Empty() {
+			continue
+		}
+
+		useNative := opt.nativeArt
+		var frames [][]string
+		var commands, deletes strings.Builder
+		for _, lift := range lifts {
+			frame := spriteFrame(original, bounds, lift)
+			if useNative {
+				command, err := kittyImage(frame, id)
+				if err != nil {
+					// Keep one representation for the whole sequence.
+					useNative = false
+					break
+				}
+				commands.WriteString(command)
+				deletes.WriteString(kittyDelete(id))
+				frames = append(frames, kittyCells(id))
+				id++
+			} else {
+				frames = append(frames, renderArt(frame))
+			}
+		}
+		if !useNative && opt.nativeArt {
+			frames = frames[:0]
+			for _, lift := range lifts {
+				frames = append(frames, renderArt(spriteFrame(original, bounds, lift)))
+			}
+		}
+		if useNative {
+			load.WriteString(commands.String())
+			clear.WriteString(deletes.String())
+		}
+		result.sprites[provider.key] = frames
 	}
-	return visuals
+	result.load, result.clear = load.String(), clear.String()
+	return result
 }
 
-func loadArt(path string) []string {
+func loadArt(path string) image.Image {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > maxAssetBytes {
 		return nil
@@ -81,11 +133,7 @@ func loadArt(path string) []string {
 	if err != nil {
 		return nil
 	}
-	bounds := visibleBounds(original)
-	if bounds.Empty() {
-		return nil
-	}
-	return renderArt(original, bounds)
+	return original
 }
 
 func visibleBounds(img image.Image) image.Rectangle {
@@ -102,28 +150,35 @@ func visibleBounds(img image.Image) image.Rectangle {
 	return crop
 }
 
-func renderArt(img image.Image, bounds image.Rectangle) []string {
-	scale := min(float64(artWidth)/float64(bounds.Dx()), float64(artHeight*2)/float64(bounds.Dy()))
-	width := max(1, int(math.Round(float64(bounds.Dx())*scale)))
-	height := max(1, int(math.Round(float64(bounds.Dy())*scale)))
-	offsetX := (artWidth - width) / 2
-	offsetY := (artHeight*2 - height) / 2
+// Every pose occupies the same transparent square so motion never moves labels
+// or alters the artwork's proportions. Nearest-neighbor keeps pixel edges crisp.
+func spriteFrame(img image.Image, bounds image.Rectangle, lift int) *image.NRGBA {
+	frame := image.NewNRGBA(image.Rect(0, 0, spriteSize, spriteSize))
+	const span = 176
+	largest := max(bounds.Dx(), bounds.Dy())
+	width := max(1, bounds.Dx()*span/largest)
+	height := max(1, bounds.Dy()*span/largest)
+	left, top := (spriteSize-width)/2, (spriteSize-height)/2+6-lift
+	for y := range height {
+		sourceY := bounds.Min.Y + (2*y+1)*bounds.Dy()/(2*height)
+		for x := range width {
+			sourceX := bounds.Min.X + (2*x+1)*bounds.Dx()/(2*width)
+			frame.Set(x+left, y+top, img.At(sourceX, sourceY))
+		}
+	}
+	return frame
+}
 
+func renderArt(img *image.NRGBA) []string {
 	pixel := func(x, y int) string {
-		x, y = x-offsetX, y-offsetY
-		if x < 0 || x >= width || y < 0 || y >= height {
+		c := img.NRGBAAt((2*x+1)*spriteSize/(2*artWidth), (2*y+1)*spriteSize/(4*artHeight))
+		if c.A < 64 {
 			return ""
 		}
-		left := bounds.Min.X + x*bounds.Dx()/width
-		top := bounds.Min.Y + y*bounds.Dy()/height
-		right := bounds.Min.X + (x+1)*bounds.Dx()/width
-		bottom := bounds.Min.Y + (y+1)*bounds.Dy()/height
-		rect := image.Rect(left, top, max(left+1, right), max(top+1, bottom))
-		return sampleColor(img, rect)
+		return rgb(c)
 	}
-
 	rows := make([]string, artHeight)
-	for y := range artHeight {
+	for y := range rows {
 		var line strings.Builder
 		for x := range artWidth {
 			line.WriteString(pixelCell(pixel(x, 2*y), pixel(x, 2*y+1)))
@@ -133,21 +188,8 @@ func renderArt(img image.Image, bounds image.Rectangle) []string {
 	return rows
 }
 
-func sampleColor(img image.Image, rect image.Rectangle) string {
-	var r, g, b, alpha uint64
-	for y := rect.Min.Y; y < rect.Max.Y; y++ {
-		for x := rect.Min.X; x < rect.Max.X; x++ {
-			red, green, blue, a := img.At(x, y).RGBA()
-			r += uint64(red)
-			g += uint64(green)
-			b += uint64(blue)
-			alpha += uint64(a)
-		}
-	}
-	if alpha < uint64(rect.Dx()*rect.Dy())*0x3800 {
-		return ""
-	}
-	return fmt.Sprintf("#%02x%02x%02x", r*255/alpha, g*255/alpha, b*255/alpha)
+func rgb(c color.NRGBA) string {
+	return fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B)
 }
 
 func pixelCell(top, bottom string) string {

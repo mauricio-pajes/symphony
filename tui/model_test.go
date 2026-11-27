@@ -31,8 +31,13 @@ func TestMotionUsesNewActivityAndClearsOnError(t *testing.T) {
 	if m.receivePoll(sample(now.Add(time.Second), "gemini")) == nil || !m.pulse["gemini"] {
 		t.Fatal("new observed event did not animate its provider")
 	}
-	if next, _ := m.Update(pulseDone(m.pulseSeq)); len(next.(model).pulse) != 0 {
-		t.Fatal("motion did not stop at the end of its pulse")
+	animation := m
+	for range spriteMotion {
+		next, _ := animation.Update(spriteTick(m.pulseSeq))
+		animation = next.(model)
+	}
+	if len(animation.pulse) != 0 {
+		t.Fatal("motion did not stop at the end of its sequence")
 	}
 	m.receivePoll(pollResult{err: errors.New("offline")})
 	if len(m.pulse) != 0 || !strings.Contains(m.render(), "Stale snapshot") {
@@ -127,7 +132,7 @@ func TestTransparentAssetKeepsBoundedTerminalDimensions(t *testing.T) {
 	if bounds := visibleBounds(image); bounds.Dx() != 31 || bounds.Dy() != 41 {
 		t.Fatalf("unexpected alpha bounds %v", bounds)
 	}
-	for _, line := range renderArt(image, visibleBounds(image)) {
+	for _, line := range renderArt(spriteFrame(image, visibleBounds(image), 0)) {
 		if ansi.StringWidth(line) != artWidth {
 			t.Fatalf("art cell width = %d", ansi.StringWidth(line))
 		}
