@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -62,24 +63,16 @@ func TestProviderArtMovesInsideTheSameFrame(t *testing.T) {
 		}
 	}
 	for _, provider := range providers {
-		file, err := os.Create(filepath.Join(dir, provider.image))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := png.Encode(file, source); err != nil {
-			t.Fatal(err)
-		}
-		if err := file.Close(); err != nil {
-			t.Fatal(err)
-		}
+		writeTestPNG(t, filepath.Join(dir, provider.image), source)
 	}
 
 	for _, native := range []bool{false, true} {
 		m := newModel(context.Background(), nil, options{assets: dir, nativeArt: native})
 		for _, provider := range providers {
-			still := m.assets.sprites[provider.key][0]
-			m.pulse = map[string]bool{provider.key: true}
-			m.pulseStep = 1
+			still := m.assets.sprites[provider.key].still
+			now := time.Now()
+			m.motions = map[string]spriteMotion{provider.key: {kind: motionWork, since: now}}
+			m.spriteAt = now.Add(2 * workFrameInterval)
 			frame := m.sprite(provider.key)
 			if len(frame) != artHeight || slices.Equal(frame, still) {
 				t.Fatalf("%s artwork did not move (native=%t)", provider.key, native)
@@ -99,9 +92,81 @@ func TestProviderArtMovesInsideTheSameFrame(t *testing.T) {
 				}
 			}
 		}
-		if native && (strings.Count(m.assets.load, "U=1") != 9 ||
-			strings.Count(m.assets.clear, "d=I,") != 9 || strings.Contains(m.assets.clear, "d=A")) {
+		if native && (strings.Count(m.assets.load, "U=1") != 15 ||
+			strings.Count(m.assets.clear, "d=I,") != 15 || strings.Contains(m.assets.clear, "d=A")) {
 			t.Fatal("native graphics did not scope uploads and cleanup to their own frames")
 		}
+	}
+}
+
+func TestArtworkSelectsNativeRestWorkAndReviewFromObservedPhase(t *testing.T) {
+	dir := t.TempDir()
+	still := image.NewNRGBA(image.Rect(0, 0, 28, 28))
+	still.SetNRGBA(12, 12, color.NRGBA{R: 255, A: 255})
+	writeTestPNG(t, filepath.Join(dir, "codex.png"), still)
+	for _, state := range []string{"rest", "work", "review"} {
+		strip := image.NewNRGBA(image.Rect(0, 0, 28*2, 28))
+		for i := range 2 {
+			at := 3 + 5*i
+			switch state {
+			case "review":
+				at += 11
+			case "rest":
+				at += 16
+			}
+			strip.SetNRGBA(i*28+at, at, color.NRGBA{G: 255, A: 255})
+		}
+		writeTestPNG(t, filepath.Join(dir, "codex-"+state+".png"), strip)
+	}
+
+	m := newModel(context.Background(), nil, options{assets: dir, nativeArt: true})
+	art := m.assets.sprites["codex"]
+	if len(art.rest) != 2 || len(art.work) != 2 || len(art.review) != 2 {
+		t.Fatal("supported motion strips were not loaded")
+	}
+	now := time.Now()
+	poll := func(state string, offset time.Duration) {
+		at := now.Add(offset)
+		var running []ticket
+		if state != "" {
+			running = []ticket{{ID: "TASK-1", Provider: "codex", State: state}}
+		}
+		m.receivePoll(pollResult{receivedAt: at, snapshot: snapshot{Running: running}})
+	}
+	poll("", 0)
+	if !slices.Equal(m.sprite("codex"), art.rest[0]) {
+		t.Fatal("a connected provider with no session did not use the rest strip")
+	}
+	poll("Implementation", time.Second)
+	if !slices.Equal(m.sprite("codex"), art.work[0]) {
+		t.Fatal("observed implementation did not use the work strip")
+	}
+	poll("Agent-Review", 2*time.Second)
+	if !slices.Equal(m.sprite("codex"), art.review[0]) {
+		t.Fatal("observed review did not use the review strip")
+	}
+	next, _ := m.Update(spriteTick(now.Add(2*time.Second + workFrameInterval)))
+	m = next.(model)
+	if !slices.Equal(m.sprite("codex"), art.review[1]) {
+		t.Fatal("motion did not advance to the next source frame")
+	}
+	next, _ = m.Update(spriteTick(now.Add(2*time.Second + 2*workFrameInterval)))
+	if !slices.Equal(next.(model).sprite("codex"), art.review[0]) {
+		t.Fatal("review motion did not loop")
+	}
+}
+
+func writeTestPNG(t *testing.T, path string, image image.Image) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(file, image); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

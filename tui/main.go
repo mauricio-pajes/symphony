@@ -41,7 +41,7 @@ func run() error {
 	flag.StringVar(&opt.assets, "assets", defaultAssets, "directory containing optional local provider PNGs")
 	flag.StringVar(&opt.theme, "theme", "auto", "terminal theme (auto, dark or light)")
 	flag.BoolVar(&opt.ascii, "ascii", false, "use ASCII markers and provider labels")
-	flag.BoolVar(&opt.noMotion, "no-motion", false, "disable motion on new activity")
+	flag.BoolVar(&opt.noMotion, "no-motion", false, "disable provider artwork animation")
 	flag.BoolVar(&opt.noAltScreen, "no-alt-screen", false, "render inline in the terminal")
 	graphics := flag.String("graphics", "auto", "provider artwork renderer (auto or cells)")
 	flag.Parse()

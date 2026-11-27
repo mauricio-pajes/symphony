@@ -40,7 +40,7 @@ func supportsNativeArt(env func(string) string) bool {
 // Use the 24 bits that the placeholder can carry via its foreground color.
 // Leave space for all frames without wrapping or touching reserved ID zero.
 func firstImageID() uint32 {
-	return 1 + rand.Uint32N((1<<24)-1-uint32(len(providers))*3)
+	return 1 + rand.Uint32N((1<<24)-1-uint32(len(providers)*(1+3*maxStripFrames)))
 }
 
 func kittyImage(img image.Image, id uint32) (string, error) {

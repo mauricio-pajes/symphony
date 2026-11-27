@@ -136,16 +136,31 @@ borders can animate around licensed art, with a static label beside every cue.
 A reconnect applies current state and skips historical animation. An
 unrecognized phase displays its last verified state and timestamp.
 
-In the current console, each local provider image uses fixed dimensions and
-keeps its original proportions. Ghostty and Kitty receive native PNG
-placements scoped to the alternate screen. The cell fallback samples the
-same transparent frames without blending edges. New attributed activity
-triggers a 240 ms lift and settle. The initial snapshot, duplicates and
-reconnects establish a stable view. [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol.html)
+In the current console, artwork uses fixed dimensions and keeps its proportions.
+Ghostty and Kitty receive native PNG placements scoped to the alternate screen.
+The cell fallback samples the same transparent frames without blending edges.
+A running ticket with a reported provider selects a continuous work loop.
+A running review can select its own loop. Providers without a running
+ticket use a slower rest loop while the snapshot is current. Each loop
+keeps its place across unchanged polls. Stale or offline snapshots show
+still artwork. One timer advances the visible cards independently of
+daemon polling.
+[Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol.html)
+
+The local motion pack uses the original working laptop and review sequences
+from the Codex desktop atlas, with the original closed-eye frames for rest.
+It also uses sampled Clawd footage from the installed Claude Desktop's `images/install-hub/clawd-laptop.webm`, and a sampled blue shooting
+star from the installed Gemini application's `spark_working_blue.json`.
+The Gemini animation represents active work on the Antigravity card. The card
+uses the official Antigravity logo with a gentle breathing motion at rest.
+The same breathing movement keeps Clawd at rest. The original assets are
+installed locally and retain their separate provenance.
+[Codex state sequences](https://github.com/openai/codex/blob/main/codex-rs/tui/src/pets/model.rs) ·
+[Antigravity press assets](https://antigravity.google/press)
 
 | Visible status | Trigger | Motion when enabled |
 | --- | --- | --- |
-| Idle | Available identity, no active attempt | Static original frame |
+| Idle | Connected snapshot with no running attempt for the provider | Slow, continuous rest loop |
 | Thinking | Provider explicitly reports a reasoning start | Brief side indicator while reported active |
 | Researching | Research phase starts | Pulse the phase marker |
 | Planning | Planning phase starts | Highlight the plan step |

@@ -33,15 +33,24 @@ Use `-assets /path/to/assets` to select a different directory.
 | `claude.png` | The original Clawd artwork |
 | `antigravity.png` | The official Antigravity icon |
 
+Optional animation strips go in the same directory. A strip contains two to
+eight square PNG frames on a single horizontal row, in playback order.
+Each cell is at most 224 pixels. Add `-work.png` for running sessions,
+`-review.png` for review states, and `-rest.png` when no session is running.
+The prefix matches the still image, for example `codex-work.png`.
+Missing review strips use the work strip. Missing work and rest strips
+use a quick lift and slow breathing movement, respectively.
+
 Ghostty and Kitty use native PNG graphics in the alternate screen. Other
 terminals, multiplexers and inline mode use crisp terminal color cells.
 Use `-graphics cells` to select the cell renderer explicitly. Providers
 without a readable asset use text labels.
 
-New provider activity triggers a short lift and settle of its artwork
-while the surrounding text stays in place. The first snapshot and the
-first snapshot after a reconnect establish baselines. A stale snapshot
-stops motion. The [terminal design](../docs/personal-symphony-tui.md)
+Work and rest loop from the first connected snapshot. An unchanged
+poll leaves the current loop running. Work uses a livelier cadence and
+rest uses a slower one. The surrounding text stays in place. Artwork
+holds still while disconnected and resumes from the current state after
+reconnecting. The [terminal design](../docs/personal-symphony-tui.md)
 records asset provenance and the wider console scope.
 
 `NO_COLOR=1` selects monochrome. `-ascii` selects monochrome and ASCII

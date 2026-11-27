@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -21,9 +22,17 @@ const (
 const initialPollDelay = 2 * time.Second
 
 type pollTick struct{}
-type spriteTick uint64
+type spriteTick time.Time
 
-var spriteMotion = [...]int{1, 2, 1}
+const (
+	workFrameInterval = 120 * time.Millisecond
+	restFrameInterval = 600 * time.Millisecond
+)
+
+type spriteMotion struct {
+	kind  motion
+	since time.Time
+}
 
 type pollResult struct {
 	snapshot   snapshot
@@ -58,9 +67,9 @@ type model struct {
 	lastErr     error
 	pollDelay   time.Duration
 
-	pulse     map[string]bool
-	pulseSeq  uint64
-	pulseStep int
+	motions      map[string]spriteMotion
+	spriteAt     time.Time
+	spriteQueued bool
 }
 
 func newModel(ctx context.Context, client *daemonClient, opt options) model {
@@ -103,6 +112,7 @@ func (m model) poll() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var command tea.Cmd
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -112,50 +122,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.palette = newPalette(!msg.IsDark())
 		}
 	case pollTick:
-		return m, m.poll()
+		command = m.poll()
 	case pollResult:
-		pulse := m.receivePoll(msg)
-		next := tea.Tick(m.pollDelay, func(time.Time) tea.Msg { return pollTick{} })
-		if pulse != nil {
-			return m, tea.Batch(next, pulse)
-		}
-		return m, next
+		m.receivePoll(msg)
+		command = tea.Tick(m.pollDelay, func(time.Time) tea.Msg { return pollTick{} })
 	case spriteTick:
-		if uint64(msg) != m.pulseSeq || len(m.pulse) == 0 {
-			return m, nil
+		m.spriteQueued = false
+		if at := time.Time(msg); at.After(m.spriteAt) {
+			m.spriteAt = at
 		}
-		m.pulseStep++
-		if m.pulseStep < len(spriteMotion) {
-			return m, m.nextSpriteTick()
-		}
-		m.pulse = nil
 	case tea.KeyPressMsg:
-		return m.handleKey(msg)
+		m, command = m.handleKey(msg)
 	}
-	return m, nil
+	if tick := m.scheduleSpriteTick(); tick != nil {
+		if command == nil {
+			return m, tick
+		}
+		return m, tea.Batch(command, tick)
+	}
+	return m, command
 }
 
-func (m *model) receivePoll(result pollResult) tea.Cmd {
-	wasCurrent := !m.lastSuccess.IsZero() && m.lastErr == nil
+func (m *model) receivePoll(result pollResult) {
 	m.lastErr = result.err
 	if result.err != nil {
-		m.pulse = nil
+		m.motions = nil
 		m.pollDelay = min(m.pollDelay*2, 20*time.Second)
-		return nil
+		return
 	}
 
-	next := sortedTickets(result.snapshot)
-	var pulse tea.Cmd
-	if wasCurrent && !m.opt.noMotion && !m.opt.monochrome {
-		m.pulse = detectActivity(m.tickets, next)
-		if len(m.pulse) > 0 {
-			m.pulseSeq++
-			m.pulseStep = 0
-			pulse = m.nextSpriteTick()
-		}
-	}
 	m.snapshot = result.snapshot
-	m.tickets = next
+	m.tickets = sortedTickets(result.snapshot)
+	if !m.opt.noMotion && len(m.assets.sprites) > 0 {
+		m.updateMotions(result.receivedAt)
+	}
 	m.lastSuccess = result.receivedAt
 	m.pollDelay = initialPollDelay
 	m.keepSelection()
@@ -163,24 +163,62 @@ func (m *model) receivePoll(result pollResult) tea.Cmd {
 		m.detail = result.detail
 		m.detailErr = result.detailErr
 	}
-	return pulse
 }
 
-func (m model) nextSpriteTick() tea.Cmd {
-	frame := spriteTick(m.pulseSeq)
-	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg { return frame })
+func (m *model) updateMotions(at time.Time) {
+	kinds := runningMotions(m.tickets)
+	next := make(map[string]spriteMotion, len(m.assets.sprites))
+	for provider, art := range m.assets.sprites {
+		kind := kinds[provider]
+		if kind == motionReview && len(art.review) == 0 {
+			kind = motionWork
+		}
+		if len(art.frames(kind)) == 0 {
+			continue
+		}
+		current, exists := m.motions[provider]
+		if !exists || current.kind != kind {
+			current = spriteMotion{kind: kind, since: at}
+		}
+		next[provider] = current
+	}
+	m.motions = next
+	// A delayed poll result must not move the clock backwards.
+	if at.After(m.spriteAt) {
+		m.spriteAt = at
+	}
+}
+
+func (m *model) scheduleSpriteTick() tea.Cmd {
+	cardsVisible := m.showStrip() || (m.page == agentsPage && m.width >= 30 && m.height >= 8)
+	if m.spriteQueued || len(m.motions) == 0 || !cardsVisible {
+		return nil
+	}
+
+	delay := restFrameInterval
+	for _, current := range m.motions {
+		if current.kind != motionRest {
+			delay = workFrameInterval
+			break
+		}
+	}
+	m.spriteQueued = true
+	return tea.Tick(delay, func(at time.Time) tea.Msg { return spriteTick(at) })
 }
 
 func (m model) sprite(provider string) []string {
-	frames := m.assets.sprites[provider]
-	if len(frames) == 0 {
-		return nil
+	art := m.assets.sprites[provider]
+	current, ok := m.motions[provider]
+	if !ok {
+		return art.still
 	}
-	frame := 0
-	if m.pulse[provider] && len(frames) > 1 {
-		frame = spriteMotion[m.pulseStep]
+	frames := art.frames(current.kind)
+	interval := workFrameInterval
+	if current.kind == motionRest {
+		interval = restFrameInterval
 	}
-	return frames[frame]
+	step := max(0, m.spriteAt.Sub(current.since)) / interval
+	return frames[int(step)%len(frames)]
 }
 
 func sortedTickets(state snapshot) []ticket {
@@ -217,28 +255,26 @@ func (state snapshot) hasIssue(id string) bool {
 		slices.ContainsFunc(state.Retrying, match)
 }
 
-func detectActivity(before, after []ticket) map[string]bool {
-	previous := make(map[string]ticket, len(before))
-	for _, t := range before {
-		previous[t.ID] = t
-	}
-	pulse := make(map[string]bool)
-	for _, t := range after {
+func runningMotions(tickets []ticket) map[string]motion {
+	kinds := make(map[string]motion)
+	for _, t := range tickets {
 		provider := providerKey(t.Provider)
-		if provider == "" {
+		if provider == "" || t.Status != "Running" {
 			continue
 		}
-		old, exists := previous[t.ID]
-		if !exists || providerKey(old.Provider) != provider || old.Status != t.Status || old.State != t.State ||
-			old.Session != t.Session || old.LastEvent != t.LastEvent ||
-			t.LastEventAt.After(old.LastEventAt) || old.TurnCount != t.TurnCount {
-			pulse[provider] = true
+		kind := motionWork
+		words := strings.FieldsFunc(strings.ToLower(t.State), func(r rune) bool {
+			return !unicode.IsLetter(r)
+		})
+		if slices.Contains(words, "review") {
+			kind = motionReview
 		}
+		kinds[provider] = max(kinds[provider], kind)
 	}
-	return pulse
+	return kinds
 }
 
-func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		return m, tea.Quit
 	}

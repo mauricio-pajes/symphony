@@ -135,7 +135,7 @@ func (m model) providerCard(provider providerInfo, width, height int) []string {
 		art[artHeight/2] = m.center("["+provider.abbreviation+"]", artWidth)
 	}
 	tone := m.palette.muted
-	if m.pulse[provider.key] {
+	if m.motions[provider.key].kind != motionRest {
 		tone = m.palette.accent
 	}
 	status, modelLabel := m.providerStatus(provider.key)
@@ -380,7 +380,7 @@ func (m model) issueLines(width int) []string {
 func (m model) agentLines(width int) []string {
 	lines := []string{m.sectionHeading("AGENT AVAILABILITY", width), ""}
 	for _, provider := range providers {
-		if !m.showStrip() && len(m.assets.sprites[provider.key]) > 0 {
+		if !m.showStrip() && len(m.assets.sprites[provider.key].still) > 0 {
 			lines = append(lines, m.providerCard(provider, width, artHeight)...)
 		} else {
 			status, _ := m.providerStatus(provider.key)

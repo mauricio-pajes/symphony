@@ -13,47 +13,106 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-func TestMotionUsesNewActivityAndClearsOnError(t *testing.T) {
-	now := time.Now()
-	sample := func(at time.Time, provider string) pollResult {
-		return pollResult{receivedAt: at, snapshot: snapshot{
-			GeneratedAt: at,
-			Running:     []ticket{{ID: "ISSUE-1", Provider: provider, LastEventAt: at}},
-		}}
-	}
+func TestMotionUsesCurrentRunsAndClearsOnError(t *testing.T) {
 	m := newModel(context.Background(), nil, options{})
-	if m.receivePoll(sample(now, "gemini")) != nil || len(m.pulse) != 0 {
-		t.Fatal("initial state animated")
+	m.width, m.height = 110, 30
+	frame := func(label string) []string {
+		rows := make([]string, artHeight)
+		rows[0] = label
+		return rows
 	}
-	if m.receivePoll(sample(now, "gemini")) != nil || len(m.pulse) != 0 {
-		t.Fatal("repeated observation animated")
+	art := providerArtwork{
+		still: frame("still"),
+		rest:  [][]string{frame("rest 1"), frame("rest 2")},
+		work:  [][]string{frame("work 1"), frame("work 2")},
 	}
-	if m.receivePoll(sample(now.Add(time.Second), "gemini")) == nil || !m.pulse["gemini"] {
-		t.Fatal("new observed event did not animate its provider")
+	m.assets.sprites = map[string]providerArtwork{"codex": art, "gemini": art}
+	now := time.Now()
+
+	poll := func(at time.Time, state snapshot) {
+		next, _ := m.Update(pollResult{receivedAt: at, snapshot: state})
+		m = next.(model)
 	}
-	animation := m
-	for range spriteMotion {
-		next, _ := animation.Update(spriteTick(m.pulseSeq))
-		animation = next.(model)
-	}
-	if len(animation.pulse) != 0 {
-		t.Fatal("motion did not stop at the end of its sequence")
-	}
-	m.receivePoll(pollResult{err: errors.New("offline")})
-	if len(m.pulse) != 0 || !strings.Contains(m.render(), "Stale snapshot") {
-		t.Fatal("disconnect did not clear motion and expose stale status immediately")
-	}
-	if m.receivePoll(sample(now.Add(3*time.Second), "codex")) != nil || len(m.pulse) != 0 {
-		t.Fatal("reconnect animated unobserved history")
-	}
-	if m.receivePoll(sample(now.Add(4*time.Second), "")) != nil || len(m.pulse) != 0 {
-		t.Fatal("unattributed activity animated")
+	tick := func(at time.Time) {
+		next, command := m.Update(spriteTick(at))
+		if command == nil {
+			t.Fatal("visible motion did not schedule its next tick")
+		}
+		m = next.(model)
 	}
 
-	reduced := newModel(context.Background(), nil, options{noMotion: true})
-	reduced.receivePoll(sample(now, "gemini"))
-	if reduced.receivePoll(sample(now.Add(time.Second), "gemini")) != nil {
+	if m.scheduleSpriteTick() != nil {
+		t.Fatal("motion started before the first successful poll")
+	}
+	work := snapshot{Running: []ticket{{ID: "ISSUE-1", Provider: "gemini"}}}
+	poll(now, work)
+	if m.motions["gemini"].kind != motionWork || m.motions["codex"].kind != motionRest || !m.spriteQueued {
+		t.Fatal("the initial snapshot did not start working and resting loops together")
+	}
+	if m.scheduleSpriteTick() != nil {
+		t.Fatal("more than one animation timer was queued")
+	}
+
+	tick(now.Add(5 * workFrameInterval))
+	poll(now.Add(5*workFrameInterval), work)
+	if m.sprite("gemini")[0] != "work 2" || m.sprite("codex")[0] != "rest 2" {
+		t.Fatal("both loops should advance through a repeated poll")
+	}
+	tick(now.Add(2 * restFrameInterval))
+	if m.sprite("gemini")[0] != "work 1" || m.sprite("codex")[0] != "rest 1" {
+		t.Fatal("both sequences should wrap continuously")
+	}
+
+	nextAt := now.Add(3 * restFrameInterval)
+	poll(nextAt, snapshot{Retrying: work.Running})
+	if m.sprite("gemini")[0] != "rest 1" || !m.motions["codex"].since.Equal(now) {
+		t.Fatal("retrying should select rest without resetting other providers")
+	}
+	tick(nextAt.Add(restFrameInterval))
+	if m.sprite("gemini")[0] != "rest 2" {
+		t.Fatal("rest loop did not continue on a retry")
+	}
+
+	m.receivePoll(pollResult{err: errors.New("offline")})
+	if len(m.motions) != 0 || m.sprite("gemini")[0] != "still" || !strings.Contains(m.render(), "Stale snapshot") {
+		t.Fatal("disconnect did not freeze motion and expose stale status immediately")
+	}
+	next, cmd := m.Update(spriteTick(nextAt.Add(2 * restFrameInterval)))
+	m = next.(model)
+	if cmd != nil || m.spriteQueued {
+		t.Fatal("an outstanding timer restarted a loop while disconnected")
+	}
+	poll(nextAt.Add(3*restFrameInterval), work)
+	if m.motions["gemini"].kind != motionWork || !m.spriteQueued {
+		t.Fatal("the current work loop did not resume after reconnect")
+	}
+
+	m.opt.noMotion = true
+	m.receivePoll(pollResult{err: errors.New("offline")})
+	poll(nextAt.Add(4*restFrameInterval), work)
+	if len(m.motions) != 0 {
 		t.Fatal("motion ran after being disabled")
+	}
+}
+
+func TestMotionTimerWaitsForVisibleCards(t *testing.T) {
+	m := newModel(context.Background(), nil, options{})
+	m.assets.sprites = map[string]providerArtwork{"codex": {rest: [][]string{{"rest"}}}}
+	m.width, m.height = 60, 20
+	m.receivePoll(pollResult{receivedAt: time.Now()})
+	if m.scheduleSpriteTick() != nil {
+		t.Fatal("the compact queue has no visible cards")
+	}
+	next, cmd := m.Update(tea.KeyPressMsg{Code: '2'})
+	m = next.(model)
+	if cmd == nil || !m.spriteQueued {
+		t.Fatal("opening the Agents page did not schedule visible motion")
+	}
+	next, _ = m.Update(tea.KeyPressMsg{Code: '1'})
+	m = next.(model)
+	_, cmd = m.Update(spriteTick(time.Now()))
+	if cmd != nil {
+		t.Fatal("the hidden animation kept scheduling frames")
 	}
 }
 
@@ -132,7 +191,7 @@ func TestTransparentAssetKeepsBoundedTerminalDimensions(t *testing.T) {
 	if bounds := visibleBounds(image); bounds.Dx() != 31 || bounds.Dy() != 41 {
 		t.Fatalf("unexpected alpha bounds %v", bounds)
 	}
-	for _, line := range renderArt(spriteFrame(image, visibleBounds(image), 0)) {
+	for _, line := range renderArt(spriteFrame(image, visibleBounds(image), 0, 0)) {
 		if ansi.StringWidth(line) != artWidth {
 			t.Fatalf("art cell width = %d", ansi.StringWidth(line))
 		}
