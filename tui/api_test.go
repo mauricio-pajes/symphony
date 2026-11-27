@@ -65,6 +65,73 @@ func TestDaemonGETContract(t *testing.T) {
 	}
 }
 
+func TestProjectQueueKeepsEqualIdentifiersSeparate(t *testing.T) {
+	server := func(title string, offline bool) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				t.Errorf("unexpected method %q", r.Method)
+			}
+			if offline {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			switch r.URL.Path {
+			case "/api/v1/state":
+				fmt.Fprintf(w, `{"generated_at":"2026-11-26T15:30:00Z","running":[{"issue_identifier":"DEMO-1","title":%q}]}`, title)
+			case "/api/v1/DEMO-1":
+				fmt.Fprintf(w, `{"issue_identifier":"DEMO-1","status":"Running","last_error":%q}`, title)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	}
+	a := server("First project", false)
+	defer a.Close()
+	b := server("Second project", false)
+	defer b.Close()
+	c := server("Unavailable", true)
+	defer c.Close()
+
+	var client projectClient
+	for _, source := range []string{"Alpha=" + a.URL, "Beta=" + b.URL, "Gamma=" + c.URL} {
+		if err := client.add(source); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	state, err := client.state(ctx)
+	if err != nil || len(state.Projects) != 3 || state.Projects[2].Err == nil {
+		t.Fatalf("project health = %+v, %v", state.Projects, err)
+	}
+	rows := sortedTickets(state)
+	if len(rows) != 2 || rows[0].Project != "Alpha" || rows[1].Project != "Beta" {
+		t.Fatalf("queue = %+v", rows)
+	}
+	for _, row := range rows {
+		detail, err := client.issue(ctx, row.key())
+		if err != nil || detail.Error != row.Title {
+			t.Fatalf("detail for %s = %+v, %v", row.Project, detail, err)
+		}
+	}
+}
+
+func TestManagedDaemonProcessDiscovery(t *testing.T) {
+	command := "/Users/demo/project with spaces/symphony -B -S 2:2 -- " + daemonAcknowledgement + " --port 4848 WORKFLOW.md"
+	executable, port, ok := daemonProcess(command)
+	if !ok || executable != "/Users/demo/project with spaces/symphony" || port != 4848 {
+		t.Fatalf("detected executable %q and port %d (%v)", executable, port, ok)
+	}
+	for _, candidate := range []string{
+		"python " + daemonAcknowledgement + " --port 4848",
+		"/tmp/symphony -B --port 4848",
+		"/tmp/symphony " + daemonAcknowledgement + " --port 65536",
+	} {
+		if _, _, ok := daemonProcess(candidate); ok {
+			t.Errorf("accepted unrelated or invalid process %q", candidate)
+		}
+	}
+}
+
 func TestDaemonRedirectAndSnapshotErrors(t *testing.T) {
 	var redirected atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {

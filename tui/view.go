@@ -99,6 +99,24 @@ func (m model) header() []string {
 	if m.lastErr != nil {
 		healthColor = m.palette.warning
 	}
+	if projects := m.snapshot.Projects; len(projects) > 0 {
+		var connected, offline []string
+		for _, project := range projects {
+			if project.Err == nil {
+				connected = append(connected, project.Name)
+			} else {
+				offline = append(offline, project.Name)
+			}
+		}
+		health = fmt.Sprintf("Connected %d/%d  %s", len(connected), len(projects), strings.Join(connected, " · "))
+		if len(offline) == len(projects) {
+			health = "Offline  " + strings.Join(offline, " · ")
+			healthColor = m.palette.warning
+		} else if len(offline) > 0 {
+			health += "  Offline  " + strings.Join(offline, " · ")
+			healthColor = m.palette.warning
+		}
+	}
 	return []string{
 		m.fill("  "+top, m.width, m.palette.rail, m.palette.text, false),
 		"  " + m.paint(m.clip(health, m.width-2), healthColor, nil, false),
@@ -188,7 +206,8 @@ func (m model) center(line string, width int) string {
 }
 
 func (m model) providerStatus(provider string) (string, string) {
-	if m.lastSuccess.IsZero() || m.lastErr != nil {
+	if m.lastSuccess.IsZero() || m.lastErr != nil ||
+		(len(m.snapshot.Projects) > 0 && !slices.ContainsFunc(m.snapshot.Projects, func(project projectHealth) bool { return project.Err == nil })) {
 		return "Status unknown", ""
 	}
 	var active []ticket
@@ -295,29 +314,32 @@ func (m model) queueLines(width int) []string {
 		}
 		marker := "  "
 		var background color.Color
-		if row.ID == m.selected {
+		selected := row.key() == m.selected
+		if selected {
 			marker, background = "> ", m.palette.selected
 		}
 		state := clean(row.Status)
 		label := clean(row.ID)
-		if width >= 48 && row.State != "" {
+		if row.Project != "" {
+			label += " · " + clean(row.Project)
+		} else if width >= 48 && row.State != "" {
 			label += "  " + clean(row.State)
 		}
 		gap := max(1, width-3-ansi.StringWidth(label)-ansi.StringWidth(state))
 		label = m.clip(label, max(1, width-4-ansi.StringWidth(state)))
-		lines = append(lines, m.fill(marker+label+strings.Repeat(" ", gap)+state, width, background, tone, row.ID == m.selected))
+		lines = append(lines, m.fill(marker+label+strings.Repeat(" ", gap)+state, width, background, tone, selected))
 	}
 	return lines
 }
 
 func (m model) visibleQueueRows(rows []ticket) []ticket {
-	current := slices.IndexFunc(rows, func(t ticket) bool { return t.ID == m.selected })
+	current := slices.IndexFunc(rows, func(t ticket) bool { return t.key() == m.selected })
 	offset := max(0, current-m.bodyHeight()+2)
 	return rows[offset:min(len(rows), offset+m.bodyHeight()-1)]
 }
 
 func (m model) selectedTicket() (ticket, bool) {
-	i := slices.IndexFunc(m.tickets, func(t ticket) bool { return t.ID == m.selected })
+	i := slices.IndexFunc(m.tickets, func(t ticket) bool { return t.key() == m.selected })
 	if i < 0 {
 		return ticket{}, false
 	}
@@ -377,6 +399,7 @@ func (m model) issueLines(width int) []string {
 		heading = "> " + heading
 	}
 	lines := []string{m.sectionHeading(heading, width), ""}
+	lines = m.appendField(lines, "Project", clean(row.Project), width)
 	lines = m.appendField(lines, "Status", row.Status, width)
 	lines = m.appendField(lines, "Tracker state", row.State, width)
 	lines = m.appendField(lines, "Provider", providerName(row.Provider), width)
@@ -405,6 +428,13 @@ func (m model) issueLines(width int) []string {
 
 func (m model) agentLines(width int) []string {
 	lines := []string{m.sectionHeading("AGENT AVAILABILITY", width), ""}
+	for _, project := range m.snapshot.Projects {
+		status := "Connected"
+		if project.Err != nil {
+			status = "Offline  " + project.Err.Error()
+		}
+		lines = m.appendField(lines, project.Name, status, width)
+	}
 	for _, provider := range providers {
 		if !m.showStrip() && len(m.assets.sprites[provider.key].still) > 0 {
 			lines = append(lines, m.providerCard(provider, width, artHeight)...)
@@ -416,6 +446,9 @@ func (m model) agentLines(width int) []string {
 		for _, row := range m.tickets {
 			if row.Provider == provider.key {
 				reference := row.ID + "  " + row.Status
+				if row.Project != "" {
+					reference += "  " + row.Project
+				}
 				if row.Model != "" {
 					reference += "  " + strings.TrimSpace(row.Model+" "+row.Effort)
 				}

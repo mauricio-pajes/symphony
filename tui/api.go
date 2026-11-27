@@ -41,6 +41,14 @@ type ticket struct {
 	Reason      string      `json:"error"`
 	Tokens      *tokenUsage `json:"tokens"`
 	Status      string      `json:"-"`
+	Project     string      `json:"-"`
+}
+
+func (t ticket) key() string {
+	if t.Project == "" {
+		return t.ID
+	}
+	return t.Project + "\x00" + t.ID
 }
 
 type apiError struct {
@@ -55,6 +63,12 @@ type snapshot struct {
 	CodexTotals *tokenUsage     `json:"codex_totals"`
 	RateLimits  json.RawMessage `json:"rate_limits"`
 	Error       *apiError       `json:"error"`
+	Projects    []projectHealth `json:"-"`
+}
+
+type consoleClient interface {
+	state(context.Context) (snapshot, error)
+	issue(context.Context, string) (ticketDetail, error)
 }
 
 type event struct {

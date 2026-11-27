@@ -45,7 +45,7 @@ type pollResult struct {
 
 type model struct {
 	ctx     context.Context
-	client  *daemonClient
+	client  consoleClient
 	opt     options
 	palette palette
 	assets  artwork
@@ -72,9 +72,9 @@ type model struct {
 	spriteQueued bool
 }
 
-func newModel(ctx context.Context, client *daemonClient, opt options) model {
+func newModel(ctx context.Context, client consoleClient, opt options) model {
 	filter := textinput.New()
-	filter.Placeholder = "Issue, state or agent"
+	filter.Placeholder = "Issue, project, state or agent"
 	filter.Prompt = "/ "
 	filter.CharLimit = 100
 	filter.SetWidth(30)
@@ -242,12 +242,13 @@ func sortedTickets(state snapshot) []ticket {
 	seen := make(map[string]bool)
 	for _, group := range groups {
 		items := slices.Clone(group.rows)
-		slices.SortFunc(items, func(a, b ticket) int { return strings.Compare(a.ID, b.ID) })
+		slices.SortFunc(items, func(a, b ticket) int { return strings.Compare(a.key(), b.key()) })
 		for _, row := range items {
-			if row.ID != "" && !seen[row.ID] {
+			key := row.key()
+			if row.ID != "" && !seen[key] {
 				row.Status = group.status
 				rows = append(rows, row)
-				seen[row.ID] = true
+				seen[key] = true
 			}
 		}
 	}
@@ -258,7 +259,7 @@ func (state snapshot) hasIssue(id string) bool {
 	if id == "" {
 		return false
 	}
-	match := func(t ticket) bool { return t.ID == id }
+	match := func(t ticket) bool { return t.key() == id }
 	return slices.ContainsFunc(state.Blocked, match) || slices.ContainsFunc(state.Running, match) ||
 		slices.ContainsFunc(state.Retrying, match)
 }
@@ -403,7 +404,7 @@ func (m *model) click(mouse tea.Mouse) {
 	if index >= 0 && index < len(rows) {
 		m.filtering = false
 		m.filter.Blur()
-		m.selectTicket(rows[index].ID)
+		m.selectTicket(rows[index].key())
 		m.inspect = m.width < 100
 	}
 }
@@ -429,20 +430,20 @@ func (m *model) wheel(mouse tea.Mouse) {
 
 func (m *model) move(offset int) {
 	rows := m.filtered()
-	current := slices.IndexFunc(rows, func(t ticket) bool { return t.ID == m.selected })
+	current := slices.IndexFunc(rows, func(t ticket) bool { return t.key() == m.selected })
 	if current >= 0 {
-		m.selectTicket(rows[max(0, min(len(rows)-1, current+offset))].ID)
+		m.selectTicket(rows[max(0, min(len(rows)-1, current+offset))].key())
 	}
 }
 
 func (m *model) keepSelection() {
 	rows := m.filtered()
-	if slices.ContainsFunc(rows, func(t ticket) bool { return t.ID == m.selected }) {
+	if slices.ContainsFunc(rows, func(t ticket) bool { return t.key() == m.selected }) {
 		return
 	}
 	first := ""
 	if len(rows) > 0 {
-		first = rows[0].ID
+		first = rows[0].key()
 	}
 	m.selectTicket(first)
 }
@@ -461,7 +462,7 @@ func (m model) filtered() []ticket {
 	}
 	var result []ticket
 	for _, t := range m.tickets {
-		search := strings.Join([]string{t.ID, t.Title, t.State, t.Status, providerName(t.Provider)}, " ")
+		search := strings.Join([]string{t.ID, t.Project, t.Title, t.State, t.Status, providerName(t.Provider)}, " ")
 		if strings.Contains(strings.ToLower(search), query) {
 			result = append(result, t)
 		}

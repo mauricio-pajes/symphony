@@ -34,6 +34,8 @@ func main() {
 func run() error {
 	var opt options
 	address := flag.String("url", "http://127.0.0.1:4000", "local Symphony daemon URL")
+	var projects projectClient
+	flag.Func("project", "include a project as NAME=URL (repeat for more projects)", projects.add)
 	defaultAssets := ""
 	if dir, err := os.UserConfigDir(); err == nil {
 		defaultAssets = filepath.Join(dir, "symphony-tui", "assets")
@@ -45,6 +47,13 @@ func run() error {
 	flag.BoolVar(&opt.noAltScreen, "no-alt-screen", false, "render inline in the terminal")
 	graphics := flag.String("graphics", "auto", "provider artwork renderer (auto or cells)")
 	flag.Parse()
+	var explicitDaemon bool
+	flag.Visit(func(option *flag.Flag) {
+		explicitDaemon = explicitDaemon || option.Name == "url" || option.Name == "project"
+	})
+	if !explicitDaemon {
+		projects.discoverLocal()
+	}
 
 	switch opt.theme {
 	case "auto", "dark", "light":
@@ -55,9 +64,13 @@ func run() error {
 		return fmt.Errorf("unknown graphics mode %q", *graphics)
 	}
 
-	client, err := newDaemonClient(*address)
-	if err != nil {
-		return err
+	var client consoleClient = &projects
+	if len(projects.sources) == 0 {
+		single, err := newDaemonClient(*address)
+		if err != nil {
+			return err
+		}
+		client = single
 	}
 
 	_, noColor := os.LookupEnv("NO_COLOR")
@@ -78,7 +91,7 @@ func run() error {
 			tea.WithOutput(&artworkOutput{File: os.Stdout, art: model.assets}),
 		)
 	}
-	_, err = tea.NewProgram(model, programOptions...).Run()
+	_, err := tea.NewProgram(model, programOptions...).Run()
 	if ctx.Err() != nil {
 		return nil
 	}

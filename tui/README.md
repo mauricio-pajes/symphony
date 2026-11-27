@@ -8,12 +8,25 @@ Codex data.
 
 ## Run
 
-With Go 1.26 or later, run this from the repository root while the daemon's
-observability endpoint is available on loopback.
+With Go 1.26 or later, run this from the repository root to discover the
+current user's local Symphony daemons with an observability port.
 
 ```sh
 cd tui
-go run . -url http://127.0.0.1:4000
+go run .
+```
+
+The console uses port 4000 when it cannot discover a running daemon.
+Use `-url` for a specific daemon or repeated `-project` flags for an explicit
+list. To name a discovered project, put the display name on the first line
+of a `console-project` file beside its daemon executable.
+Queue rows show their project and selecting a row loads its details from
+the corresponding daemon. Project health appears in the header and Agents
+view.
+
+```sh
+go run . -project 'Sandbox=http://127.0.0.1:4847' \
+  -project 'CiberHéroes=http://127.0.0.1:4848'
 ```
 
 Use the unauthenticated endpoint for synthetic or shareable data. The client
