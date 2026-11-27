@@ -14,6 +14,12 @@ ITEMS = [
     ("NOTEBOOK-01", "Field notebook", 14, 3),
     ("PENCIL-02", "Graphite pencil", 4, 4),
 ]
+CATALOG_FILES = {
+    "/": ("catalog.html", "text/html; charset=utf-8"),
+    "/catalog.css": ("catalog.css", "text/css; charset=utf-8"),
+    "/catalog.js": ("catalog.js", "text/javascript; charset=utf-8"),
+    "/ui-config.json": ("ui-config.json", "application/json"),
+}
 
 
 def inventory(sku=None):
@@ -33,6 +39,16 @@ def build_server(port, *, quiet=False):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             path = urlsplit(self.path).path
+            if path in CATALOG_FILES:
+                name, content_type = CATALOG_FILES[path]
+                if (ROOT / name).is_file():
+                    self.send_bytes(HTTPStatus.OK, (ROOT / name).read_bytes(), content_type)
+                    return
+            if path == "/api/catalog" and (ROOT / "catalog.html").is_file():
+                items = [{"sku": sku, "name": name, "available": max(0, stock - reserved)}
+                         for sku, name, stock, reserved in ITEMS]
+                self.send_json(HTTPStatus.OK, {"items": items})
+                return
             if path == "/api/items":
                 self.send_json(HTTPStatus.OK, {"items": inventory()})
                 return
@@ -49,8 +65,11 @@ def build_server(port, *, quiet=False):
 
         def send_json(self, status, payload):
             body = (json.dumps(payload) + "\n").encode()
+            self.send_bytes(status, body, "application/json")
+
+        def send_bytes(self, status, body, content_type):
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

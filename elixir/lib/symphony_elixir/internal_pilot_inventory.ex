@@ -95,9 +95,10 @@ defmodule SymphonyElixir.InternalPilotInventory do
 
   def demos(_result, _revision), do: {:error, :invalid_demo_evidence}
 
-  defp asset?(value) when is_binary(value) do
+  @spec asset?(term()) :: boolean()
+  def asset?(value) when is_binary(value) do
     Regex.match?(~r/\Ahttps:\/\/uploads\.linear\.app\/[a-zA-Z0-9_\/-]+(?:\.mp4)?\z/, value)
   end
 
-  defp asset?(_value), do: false
+  def asset?(_value), do: false
 end

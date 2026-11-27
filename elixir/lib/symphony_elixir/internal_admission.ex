@@ -83,6 +83,10 @@ defmodule SymphonyElixir.InternalAdmission do
     end
   end
 
+  @doc "Returns the durable admissions for the single scheduler owning this journal."
+  @spec records(t()) :: {:ok, %{scope() => record()}} | {:error, term()}
+  def records(journal), do: read_records(journal)
+
   @doc "Admits a previously unrecorded issue after host authorization."
   @spec admit(t(), scope(), String.t(), String.t()) :: :ok | {:error, term()}
   def admit(journal, {project_id, issue_id} = scope, run_id, workspace_id) do

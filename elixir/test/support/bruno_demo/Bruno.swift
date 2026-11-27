@@ -99,16 +99,29 @@ struct Bruno {
         }
     }
 
+    func hideSidebar() throws {
+        if button("Show sidebar") != nil { return }
+        try action("Hide sidebar")
+        if retry({ button("Show sidebar") }) != nil { return }
+
+        // Electron can accept the accessibility action without repainting the button.
+        // Click the still-visible Hide control only after confirming the current state.
+        if let hide = button("Hide sidebar") { try pointer(center(hide), click: true) }
+        guard retry({ button("Show sidebar") }) != nil else {
+            throw DemoError.requestNotReady("the workspace sidebar could not be hidden")
+        }
+    }
+
     func prepare(_ url: String) throws -> (AXUIElement, AXUIElement) {
         AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        try hideSidebar()
         if button("New Transient Request") != nil {
             try action("New Transient Request")
         } else {
             newRequestShortcut(running)
         }
-        if button("Hide sidebar") != nil { try action("Hide sidebar") }
         Thread.sleep(forTimeInterval: 0.6)
-        guard button("Hide sidebar") == nil else { throw DemoError.requestNotReady("the workspace sidebar is visible") }
+        try hideSidebar()
         guard let editor = retry({ urlEditor() }) else { throw DemoError.missingControl("request URL") }
         AXUIElementSetAttributeValue(editor, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         guard AXUIElementSetAttributeValue(editor, kAXValueAttribute as CFString, url as CFString) == .success else {

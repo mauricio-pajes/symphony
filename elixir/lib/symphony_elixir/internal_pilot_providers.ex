@@ -6,7 +6,7 @@ defmodule SymphonyElixir.InternalPilotProviders do
   owns the workspace leases, the verification and the Linear transition.
   """
 
-  alias SymphonyElixir.{HeadlessAgent, InternalPilotRepository}
+  alias SymphonyElixir.{HeadlessAgent, InternalPilotFrontend, InternalPilotRepository}
 
   @gemini_model "gemini-4-neon-low"
   @plan_label "Gemini plan SHA-256: "
@@ -26,20 +26,22 @@ defmodule SymphonyElixir.InternalPilotProviders do
 
     #{InternalPilotRepository.requirements(mode)}
 
-    Return a short actionable implementation and verification plan in the summary field.
+    Put an actionable implementation and verification plan of at most 350 characters in the summary field.
     Use one line of plain prose, without Markdown or backticks.
     Do not use tools or write files.
     """
 
-    command = gemini_command(%{"summary" => %{type: "string"}})
+    command = gemini_command(%{"summary" => %{type: "string", maxLength: 480}})
 
     with {:ok, output} <- HeadlessAgent.isolated(:gemini_plan, command, workspace, prompt, 120_000),
-         {:ok, %{"summary" => summary} = plan} when map_size(plan) == 1 <- Jason.decode(output),
-         true <- valid_summary?(summary) do
+         {:ok, %{"summary" => raw} = plan} when map_size(plan) == 1 <- Jason.decode(output),
+         {:ok, summary} <- plan_summary(raw) do
       {:ok, %{summary: summary, revision: digest(summary)}}
     else
       {:error, {:agent_timeout, :gemini_plan}} -> {:error, :gemini_pilot_timeout}
       {:error, {:agent_executable_missing, :gemini_plan}} -> {:error, :gemini_pilot_cli_missing}
+      {:error, {:agent_exit, :gemini_plan, _status}} -> {:error, :gemini_pilot_cli_failed}
+      {:error, {:missing_agent_result, :gemini_plan}} -> {:error, :gemini_pilot_missing_structured_output}
       _failure -> {:error, :gemini_pilot_invalid_plan}
     end
   end
@@ -78,8 +80,8 @@ defmodule SymphonyElixir.InternalPilotProviders do
     end
   end
 
-  @spec demo(Path.t(), String.t(), Path.t()) :: {:ok, map()} | {:error, atom()}
-  def demo(workspace, revision, runner) do
+  @spec demo(Path.t(), String.t(), Path.t(), :api_demo | :ui_filter | :ui_sort) :: {:ok, map()} | {:error, atom()}
+  def demo(workspace, revision, runner, :api_demo) do
     prompt = """
     Direct two short silent demos in the actual Bruno API client, showing one
     successful stock check and one unknown SKU response. The executor will
@@ -105,6 +107,35 @@ defmodule SymphonyElixir.InternalPilotProviders do
       {:ok, evidence}
     else
       _failure -> {:error, :pilot_bruno_demo_failed}
+    end
+  end
+
+  def demo(workspace, revision, runner, mode) do
+    scenario = InternalPilotFrontend.scenario(mode)
+
+    prompt = """
+    Direct a silent walkthrough of the Stockroom catalog in Chromium.
+    The verified runner opens both rows, operates the #{scenario} control,
+    displays the result, then resets it. Choose desktop or mobile and an
+    integer result hold between four and eight seconds. Use only the fields
+    viewport and hold_seconds. Use no tools.
+    """
+
+    fields = %{
+      "viewport" => %{type: "string", enum: ["desktop", "mobile"]},
+      "hold_seconds" => %{type: "integer", minimum: 4, maximum: 8}
+    }
+
+    command = gemini_command(fields)
+
+    with {:ok, output} <- HeadlessAgent.isolated(:gemini_plan, command, workspace, prompt, 120_000),
+         {:ok, %{"viewport" => viewport, "hold_seconds" => seconds} = shots} <- Jason.decode(output),
+         true <- map_size(shots) == 2 and viewport in ["desktop", "mobile"] and seconds in 4..8,
+         {:ok, result} <- HeadlessAgent.isolated(:demo_runner, [runner, workspace, revision, scenario], workspace, Jason.encode!(shots), 150_000),
+         {:ok, evidence} when is_map(evidence) <- Jason.decode(result) do
+      {:ok, evidence}
+    else
+      _failure -> {:error, :pilot_browser_demo_failed}
     end
   end
 
@@ -184,5 +215,12 @@ defmodule SymphonyElixir.InternalPilotProviders do
   end
 
   defp valid_summary?(_summary), do: false
+
+  defp plan_summary(raw) when is_binary(raw) and byte_size(raw) <= 2048 do
+    summary = raw |> String.replace("`", "'") |> String.replace(~r/\s+/u, " ") |> String.trim()
+    if valid_summary?(summary), do: {:ok, summary}, else: :error
+  end
+
+  defp plan_summary(_raw), do: :error
   defp digest(value), do: Base.encode16(:crypto.hash(:sha256, value), case: :lower)
 end

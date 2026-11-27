@@ -43,19 +43,19 @@ def run(*args, cwd=None, timeout=20):
     return subprocess.check_output(args, cwd=cwd, timeout=timeout, stderr=subprocess.PIPE)
 
 
-def git_digest(workspace):
+def git_digest(workspace, source="availability.json"):
     diff = run("git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-               "diff", "--no-ext-diff", "--no-textconv", "HEAD", "--", "availability.json", cwd=workspace)
+               "diff", "--no-ext-diff", "--no-textconv", "HEAD", "--", source, cwd=workspace)
     if not diff:
         raise ValueError("The reviewed API diff is missing.")
     return hashlib.sha256(diff).hexdigest()
 
 
-def wait_for_api(server):
+def wait_for_api(server, port=8767):
     for _ in range(25):
         if server.poll() is not None:
             break
-        connection = HTTPConnection("127.0.0.1", 8767, timeout=0.5)
+        connection = HTTPConnection("127.0.0.1", port, timeout=0.5)
         try:
             connection.request("GET", "/api/items")
             if connection.getresponse().status == 200:

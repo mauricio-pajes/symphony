@@ -21,6 +21,11 @@ uses two local GET endpoints and retries with backoff when the daemon is
 unreachable. The last successful snapshot stays on screen with a stale
 indicator. Closing the console with `q` leaves Symphony running.
 
+Pass the actual daemon port with `-url` for a separate sandbox. For animated
+artwork, start the client without `NO_COLOR` in a graphics-capable terminal
+such as Ghostty. `NO_COLOR` requests the monochrome presentation, which also
+hides the artwork.
+
 ## Original provider art
 
 Place original PNG assets you may use locally in

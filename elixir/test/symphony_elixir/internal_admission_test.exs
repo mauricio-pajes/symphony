@@ -28,6 +28,7 @@ defmodule SymphonyElixir.InternalAdmissionTest do
     assert {:error, :journal_already_exists} = InternalAdmission.initialize(paths.state, paths.workspace, "boot-b")
     assert band(File.stat!(paths.ledger).mode, 0o777) == 0o600
     assert {:ok, nil} = InternalAdmission.lookup(journal, @scope)
+    assert {:ok, %{}} = InternalAdmission.records(journal)
     assert {:error, :not_admitted} = InternalAdmission.reserve(journal, @scope, @old_attempt)
     assert :ok = InternalAdmission.admit(journal, @scope, "run-a", "workspace-a")
     assert {:error, :already_admitted} = InternalAdmission.admit(journal, @scope, "run-b", "workspace-b")
@@ -36,6 +37,7 @@ defmodule SymphonyElixir.InternalAdmissionTest do
     assert {:error, :invalid_admission} = InternalAdmission.admit(journal, @scope, "run/a", "workspace-a")
     assert {:error, :invalid_scope} = InternalAdmission.admit(journal, {"project-a", "../issue-a"}, "run-c", "workspace-c")
     assert {:ok, %{status: :ready, generation: 0, lease: nil}} = InternalAdmission.lookup(journal, @scope)
+    assert {:ok, %{@scope => %{status: :ready}}} = InternalAdmission.records(journal)
     assert File.ls!(paths.state) == ["admission.json"]
   end
 

@@ -322,6 +322,37 @@ the fixture command above. The regression suite uses desktop stubs and
 checks the demonstration gate without touching Bruno or uploading anything.
 See the [Stockroom demo ADR](../docs/adr-0010-stockroom-api-demo.md).
 
+#### Continuous Stockroom queue
+
+Use `implementation: queue` in this pilot's `agent.internal_pilot` settings,
+omit `issue_id`, and pin the same project and Human Review state. Configure
+`demo_runner` with the Bruno executor and set `frontend_runner` to a trusted
+absolute launcher for `test/support/frontend_demo/run.py`. That executor
+uses Node.js, Playwright with its video dependency, Chrome, Python and
+FFmpeg. It reuses the private Linear asset uploader. The launcher can set
+`NODE_PATH` to the directory containing its installed `playwright` package.
+Set `queue_since` to an ISO 8601 timestamp when enabling an existing sandbox
+if older tickets should be kept out of the initial run.
+
+The daemon selects one eligible ticket at a time from the project's Todo
+state. Use exactly one simulated Jira link in the issue description:
+
+| Fixture | Work item | Demo client |
+| --- | --- | --- |
+| `https://jira.fixture.test/browse/PILOT-4` | Inventory availability endpoint | Native Bruno, with cURL in Linear |
+| `https://jira.fixture.test/browse/PILOT-5` | In-stock catalog filter | Browser walkthrough |
+| `https://jira.fixture.test/browse/PILOT-6` | Catalog sort by lowest availability | Browser walkthrough |
+
+Launch the daemon with a loopback observability port and point the [TUI](../tui/README.md)
+at that same address with `-url`. The daemon keeps polling when the TUI is
+closed. Linear retains Todo while the serial phases run and receives Human
+Review together with the approved diff and demo evidence. The TUI shows the
+active provider and recent outcomes for the running daemon. Unresolved
+Docker leases must drain before new work starts after a restart. Entries
+already recorded in the journal stay out of automatic dispatch.
+
+See the [continuous queue ADR](../docs/adr-0011-continuous-stockroom-queue.md).
+
 ### Isolated internal phase fixture
 
 The opt-in test routes a synthetic item through planning, implementation,

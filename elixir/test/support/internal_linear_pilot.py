@@ -48,7 +48,8 @@ class LinearFixture:
         self.name = "Todo"
         self.state_id = TODO
         self.mode = mode
-        self.api = mode in ("api", "api-demo-failed")
+        self.queue = mode in ("queue", "queue-crash")
+        self.api = self.queue or mode in ("api", "api-demo-failed")
         self.multi = self.api or mode in ("multi", "multi-rejected")
         self.repository = self.multi or mode in ("codex", "codex-invalid")
         self.jira = API_JIRA if self.api else MULTI_JIRA if self.multi else CODEX_JIRA if self.repository else JIRA
@@ -58,14 +59,23 @@ class LinearFixture:
         self.unexpected = []
         self.read_blocked = threading.Event()
         self.release_read = threading.Event()
+        self.queue_polled = threading.Event()
+        self.queue_add = threading.Event()
+        self.ledger_path = None
 
     def request(self, query, variables):
         with self.lock:
+            if self.queue and "query SymphonyLinearPoll" in query and variables["projectSlug"] == PROJECT:
+                self.queue_polled.set()
+                candidates = [self.queue_node("55555555-5555-4555-8555-555555555555", "2025-12-30T00:00:00Z")]
+                if self.queue_add.is_set() and self.state_id == TODO:
+                    candidates.append(self.queue_node(ISSUE, "2026-01-02T00:00:00Z"))
+                return 200, {"data": {"issues": {"nodes": candidates, "pageInfo": {"hasNextPage": False}}}}
             if "query SymphonyPilotIssue" in query and variables == {
                 "id": ISSUE, "project": PROJECT, "review": REVIEW,
             }:
                 self.reads += 1
-                if self.mode == "crash" and self.reads == 2:
+                if self.block_read_for_crash():
                     self.read_blocked.set()
                     self.release_read.wait(15)
                 if self.mode == "edited" and self.reads >= 2:
@@ -109,6 +119,19 @@ class LinearFixture:
             self.unexpected.append(query.splitlines()[0])
             return 400, {"errors": [{"message": "Unexpected query or scope"}]}
 
+    def queue_node(self, issue, created):
+        return {"id": issue, "identifier": "SYMP-1", "title": "Synthetic Symphony pilot",
+                "description": self.jira, "state": {"name": "Todo"}, "createdAt": created,
+                "url": "https://linear.example.test/issue/SYMP-1", "inverseRelations": {"nodes": []}}
+
+    def block_read_for_crash(self):
+        if self.mode == "crash":
+            return self.reads == 2
+        if self.mode != "queue-crash" or self.read_blocked.is_set() or not self.ledger_path.exists():
+            return False
+        records = json.loads(self.ledger_path.read_text())["records"]
+        return any((record["lease"] or {}).get("process_identity") for record in records)
+
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -150,6 +173,14 @@ def write_workflow(root, server, args):
     if server.fixture.api:
         implementation += f"    demo_runner: {json.dumps(str(root / 'bin' / 'bruno-demo'))}\n"
         image = args.api_image
+    scope = f'    issue_id: "{ISSUE}"\n'
+    if server.fixture.queue:
+        implementation = f'''    implementation: queue
+    demo_runner: {json.dumps(str(root / 'bin' / 'bruno-demo'))}
+    frontend_runner: {json.dumps(str(root / 'bin' / 'bruno-demo'))}
+    queue_since: "2026-01-01T00:00:00Z"
+'''
+        scope = ""
     workflow = root / "WORKFLOW.md"
     workflow.write_text(f"""---
 tracker:
@@ -165,8 +196,7 @@ workspace:
   root: {json.dumps(str(workspace))}
 agent:
   internal_pilot:
-{implementation}    issue_id: "{ISSUE}"
-    human_review_state_id: "{REVIEW}"
+{implementation}{scope}    human_review_state_id: "{REVIEW}"
     state_directory: {json.dumps(str(journal))}
     docker_socket: {json.dumps(args.socket)}
     image: {json.dumps(image)}
@@ -236,7 +266,7 @@ def run_case(args, mode):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                verify = verify_crash if mode == "crash" else verify_case
+                verify = {"crash": verify_crash, "queue-crash": verify_crash, "queue": verify_queue}.get(mode, verify_case)
                 verify(args, mode, root, server, log)
             except Exception:
                 if log.exists():
@@ -332,7 +362,7 @@ def verify_case(args, mode, root, server, log):
 def write_provider_stubs(root, mode):
     binary_dir = root / "bin"
     binary_dir.mkdir()
-    api = mode.startswith("api")
+    api = mode.startswith(("api", "queue"))
     source = VERSION_NORMALIZER + "w artifact.log\n" if mode == "codex-invalid" else VERSION_NORMALIZER
     if api:
         source = json.dumps(API_ROUTE, indent=2) + "\n"
@@ -394,12 +424,18 @@ printf '%s\\n' {shlex.quote(json.dumps(result))}
     path.chmod(0o700)
 
 
-def verify_crash(args, _mode, root, server, log):
+def verify_crash(args, mode, root, server, log):
     workflow = write_workflow(root, server, args)
+    if server.fixture.queue:
+        write_provider_stubs(root, mode)
+    ledger = root / "state" / "admission.json"
+    server.fixture.ledger_path = ledger
     port = daemon_port()
     daemon = start_daemon(args.binary, workflow, port, log)
-    ledger = root / "state" / "admission.json"
     try:
+        if server.fixture.queue:
+            assert server.fixture.queue_polled.wait(12)
+            server.fixture.queue_add.set()
         assert server.fixture.read_blocked.wait(20), daemon_logs(log)
         [record] = json.loads(ledger.read_text())["records"]
         assert record["lease"]["process_identity"].startswith("docker:"), record
@@ -409,9 +445,15 @@ def verify_crash(args, _mode, root, server, log):
         server.fixture.release_read.set()
         stop_daemon(daemon)
 
+    server.fixture.queue_polled.clear()
     restarted = start_daemon(args.binary, workflow, port, log)
     try:
-        await_blocked(restarted, port, "pilot parked after restart", "Todo")
+        if server.fixture.queue:
+            assert server.fixture.queue_polled.wait(12)
+            time.sleep(0.6)
+            assert daemon_logs(log).count("started phase=") == 1
+        else:
+            await_blocked(restarted, port, "pilot parked after restart", "Todo")
     finally:
         stop_daemon(restarted)
 
@@ -419,7 +461,37 @@ def verify_crash(args, _mode, root, server, log):
     assert record["status"] == "parked" and record["generation"] == 1 and record["lease"] is None, record
     assert server.fixture.changes == 0
     assert not server.fixture.unexpected, server.fixture.unexpected
-    print("crash: attached worker drained after BEAM restart; generation 1 parked, no transition")
+    print(f"{mode}: attached worker drained after BEAM restart; generation 1 parked, no transition")
+
+
+def verify_queue(args, mode, root, server, log):
+    fixture = server.fixture
+    workflow = write_workflow(root, server, args)
+    write_provider_stubs(root, mode)
+    port = daemon_port()
+    daemon = start_daemon(args.binary, workflow, port, log)
+    try:
+        assert fixture.queue_polled.wait(12)
+        fixture.queue_add.set()
+        await_blocked(daemon, port, "human review", "Human Review")
+        assert "### Bruno API demos" in fixture.description
+    finally:
+        stop_daemon(daemon)
+    ledger = json.loads((root / "state" / "admission.json").read_text())
+    [record] = ledger["records"]
+    assert record["issue_id"] == ISSUE and record["status"] == "human_review" and record["generation"] == 4
+
+    fixture.queue_polled.clear()
+    fixture.name, fixture.state_id = "Todo", TODO
+    restarted = start_daemon(args.binary, workflow, port, log)
+    try:
+        assert fixture.queue_polled.wait(12)
+        time.sleep(0.7)
+        assert fixture.changes == 1 and not fixture.unexpected, fixture.unexpected
+        assert daemon_logs(log).count("started phase=") == 4
+    finally:
+        stop_daemon(restarted)
+    print("queue: admitted a new Todo issue after startup, skipped pre-cutover work and did not replay after restart")
 
 
 def main():
@@ -433,7 +505,7 @@ def main():
     for mode in ("normal", "codex", "codex-invalid", "multi", "multi-rejected", "lost-ack-applied", "lost-ack-active", "edited", "crash"):
         run_case(args, mode)
     if args.api_image:
-        for mode in ("api", "api-demo-failed"):
+        for mode in ("api", "api-demo-failed", "queue", "queue-crash"):
             run_case(args, mode)
 
 

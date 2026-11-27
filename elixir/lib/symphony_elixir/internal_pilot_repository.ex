@@ -6,7 +6,9 @@ defmodule SymphonyElixir.InternalPilotRepository do
   The isolated worker applies the proposal and executes the trusted checks.
   """
 
-  alias SymphonyElixir.{HeadlessAgent, InternalPilotInventory}
+  alias SymphonyElixir.{HeadlessAgent, InternalPilotFrontend, InternalPilotInventory}
+
+  @frontend_modes [:ui_filter, :ui_sort]
 
   @type artifact :: %{ref: String.t(), revision: String.t(), diff: String.t()}
 
@@ -60,6 +62,7 @@ defmodule SymphonyElixir.InternalPilotRepository do
 
   @spec requirements(atom()) :: String.t()
   def requirements(:api_demo), do: InternalPilotInventory.requirements()
+  def requirements(mode) when mode in @frontend_modes, do: InternalPilotFrontend.requirements(mode)
   def requirements(_mode), do: @requirements
 
   @spec seed(Path.t(), atom()) :: :ok | {:error, term()}
@@ -82,8 +85,10 @@ defmodule SymphonyElixir.InternalPilotRepository do
     end
   end
 
-  defp seed_files(workspace, :api_demo) do
-    Enum.reduce_while(InternalPilotInventory.baseline(), :ok, fn {name, value}, :ok ->
+  defp seed_files(workspace, mode) when mode in [:api_demo | @frontend_modes] do
+    files = if mode == :api_demo, do: InternalPilotInventory.baseline(), else: InternalPilotFrontend.baseline()
+
+    Enum.reduce_while(files, :ok, fn {name, value}, :ok ->
       case File.write(Path.join(workspace, name), value, [:exclusive]) do
         :ok -> {:cont, :ok}
         error -> {:halt, error}
@@ -127,12 +132,20 @@ defmodule SymphonyElixir.InternalPilotRepository do
 
   @spec context(atom()) :: String.t()
   def context(:api_demo), do: InternalPilotInventory.context()
+  def context(mode) when mode in @frontend_modes, do: InternalPilotFrontend.context()
   def context(_mode), do: "The single editable file is normalize.sed, run by BusyBox sed -f. The baseline lowercases ASCII."
 
   defp proposal_context(:api_demo) do
     """
     #{InternalPilotInventory.context()}
     Current file: #{Map.fetch!(InternalPilotInventory.baseline(), "availability.json")}
+    """
+  end
+
+  defp proposal_context(mode) when mode in @frontend_modes do
+    """
+    #{InternalPilotFrontend.context()}
+    Current file: #{Map.fetch!(InternalPilotFrontend.baseline(), "ui-config.json")}
     """
   end
 
@@ -156,6 +169,10 @@ defmodule SymphonyElixir.InternalPilotRepository do
     worker_command(image, "test -f availability.json && test -f inventory.py && test -f test_inventory.py")
   end
 
+  def command(:planning, image, _proposal, mode) when mode in @frontend_modes do
+    worker_command(image, "test -f ui-config.json && test -f catalog.html && test -f test_catalog.py")
+  end
+
   def command(:planning, image, _proposal, _mode) do
     worker_command(image, "test -f ./normalize.sed && test -x ./normalize.sh && test -x ./test.sh")
   end
@@ -166,6 +183,10 @@ defmodule SymphonyElixir.InternalPilotRepository do
 
   def command(phase, image, _proposal, :api_demo) when phase in [:validation, :review] do
     worker_command(image, "python3 -B test_inventory.py >/tmp/symphony-tests.log 2>&1")
+  end
+
+  def command(phase, image, _proposal, mode) when phase in [:validation, :review] and mode in @frontend_modes do
+    worker_command(image, ~s(python3 -B test_catalog.py "$1" >/tmp/symphony-tests.log 2>&1), [InternalPilotFrontend.scenario(mode)])
   end
 
   def command(phase, image, _proposal, _mode) when phase in [:validation, :review] do
@@ -223,9 +244,11 @@ defmodule SymphonyElixir.InternalPilotRepository do
 
   @spec checks(atom()) :: [String.t()]
   def checks(:api_demo), do: InternalPilotInventory.checks()
+  def checks(mode) when mode in @frontend_modes, do: InternalPilotFrontend.checks()
   def checks(_mode), do: @checks
 
   defp source_file(:api_demo), do: "availability.json"
+  defp source_file(mode) when mode in @frontend_modes, do: "ui-config.json"
   defp source_file(_mode), do: @source
 
   defp codex_command do
@@ -275,6 +298,12 @@ defmodule SymphonyElixir.InternalPilotRepository do
     with true <- String.ends_with?(source, "\n"),
          {:ok, config} <- Jason.decode(source),
          do: InternalPilotInventory.safe_route?(config)
+  end
+
+  defp valid_source?(source, mode) when mode in @frontend_modes and is_binary(source) and byte_size(source) in 1..@max_source_bytes do
+    with true <- String.ends_with?(source, "\n"),
+         {:ok, config} <- Jason.decode(source),
+         do: InternalPilotFrontend.safe_config?(config)
   end
 
   defp valid_source?(source, mode) when mode != :api_demo and is_binary(source) and byte_size(source) in 1..@max_source_bytes do

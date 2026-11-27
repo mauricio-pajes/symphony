@@ -89,6 +89,12 @@ Human Review with both private video links, cURL and all four passing HTTP
 checks. A local regression also confirmed that a demo failure leaves the
 issue in Todo without attempting a review transition.
 
+The [continuous Stockroom queue](adr-0011-continuous-stockroom-queue.md)
+then picked up new Todo issues without a per-ticket launch. Two browser
+catalog changes and one API-only change reached Human Review with their
+verified diffs, passing checks and private recordings. Admission remains
+limited to the three simulated Stockroom Jira fixtures in Symphony Sandbox.
+
 ## Comparison with a Codex-only workflow
 
 Use two comparisons. First run the same proposed workflow contract and

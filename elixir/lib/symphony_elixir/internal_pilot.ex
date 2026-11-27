@@ -11,7 +11,7 @@ defmodule SymphonyElixir.InternalPilot do
 
   alias SymphonyElixir.AgentProfiles.{Availability, Profile}
   alias SymphonyElixir.AgentRouter.Request
-  alias SymphonyElixir.{InternalAdmission, InternalDispatch, InternalWorkflow}
+  alias SymphonyElixir.{InternalAdmission, InternalDispatch, InternalWorkflow, Tracker}
   alias SymphonyElixir.InternalContainerWorker, as: Worker
   alias SymphonyElixir.InternalPilotInventory, as: Inventory
   alias SymphonyElixir.InternalPilotProviders, as: Providers
@@ -25,7 +25,8 @@ defmodule SymphonyElixir.InternalPilot do
   @expected "fixture-response\n"
   @review "Human Review"
   @start_states ["todo", "to do"]
-  @independent_modes [:multi_agent, :api_demo]
+  @demo_modes [:api_demo, :ui_filter, :ui_sort]
+  @independent_modes [:multi_agent | @demo_modes]
   @phase_specs %{
     planning: {:gemini, :research, "test ! -e result.txt"},
     implementation: {:codex, :implement, "printf 'fixture-response\\n' > result.txt"},
@@ -46,6 +47,7 @@ defmodule SymphonyElixir.InternalPilot do
     :proposal,
     :review,
     :demo_runner,
+    :frontend_runner,
     :demo_evidence,
     :item,
     :source,
@@ -53,7 +55,10 @@ defmodule SymphonyElixir.InternalPilot do
     :prepared,
     :task,
     :started_at,
-    :reason
+    :reason,
+    :current,
+    :queue_since,
+    history: %{}
   ]
 
   @type t :: %__MODULE__{}
@@ -62,18 +67,18 @@ defmodule SymphonyElixir.InternalPilot do
   def validate(%{agent: %{internal_pilot: nil}}), do: :ok
 
   def validate(%{agent: %{internal_pilot: pilot}, tracker: tracker, workspace: workspace, worker: worker}) do
-    with mode when mode in ["fixture", "codex", "multi_agent", "api_demo"] <- Map.get(pilot, "implementation", "fixture"),
-         true <- demo_runner?(mode, Map.fetch(pilot, "demo_runner")),
-         settings = Map.drop(pilot, ["implementation", "demo_runner"]),
-         true <- map_size(settings) == 5,
+    with mode when mode in ["fixture", "codex", "multi_agent", "api_demo", "queue"] <- Map.get(pilot, "implementation", "fixture"),
+         true <- configured_runners?(mode, Map.fetch(pilot, "demo_runner"), Map.fetch(pilot, "frontend_runner")),
+         {:ok, _since} <- queue_since(mode, Map.get(pilot, "queue_since")),
+         settings = Map.drop(pilot, ["implementation", "demo_runner", "frontend_runner", "queue_since"]),
+         true <- scoped_settings?(mode, settings),
          %{
-           "issue_id" => issue,
            "human_review_state_id" => review,
            "state_directory" => directory,
            "docker_socket" => socket,
            "image" => image
          } <- settings,
-         true <- uuid?(issue) and uuid?(review) and absolute?(directory) and absolute?(socket),
+         true <- uuid?(review) and absolute?(directory) and absolute?(socket),
          true <- is_binary(image) and Regex.match?(~r/\Asha256:[a-f0-9]{64}\z/, image),
          true <- tracker.kind == "linear" and is_binary(tracker.project_slug) and tracker.project_slug != "",
          true <- allowed_endpoint?(tracker.endpoint) and worker.ssh_hosts == [] and absolute?(workspace.root),
@@ -95,24 +100,29 @@ defmodule SymphonyElixir.InternalPilot do
     scope = %{issue_id: settings["issue_id"], review_id: settings["human_review_state_id"], tracker: config.tracker}
 
     with {:ok, worker} <- Worker.open(settings["docker_socket"], root),
-         {:ok, journal} <- open_journal(settings["state_directory"], root, boot) do
+         {:ok, journal} <- open_journal(settings["state_directory"], root, boot),
+         {:ok, since} <- queue_since(settings["implementation"], settings["queue_since"]) do
       pilot = %__MODULE__{
         config: pinned(config),
         scope: scope,
         boot_id: boot,
         journal: journal,
         worker: worker,
-        workspace: Path.join(root, "pilot@" <> scope.issue_id),
+        workspace: if(scope.issue_id, do: Path.join(root, "pilot@" <> scope.issue_id), else: root),
         image: settings["image"],
         mode: pilot_mode(settings["implementation"]),
-        demo_runner: settings["demo_runner"]
+        demo_runner: settings["demo_runner"],
+        frontend_runner: settings["frontend_runner"],
+        queue_since: since
       }
 
-      {:ok, recover_at_start(pilot)}
+      {:ok, if(pilot.mode == :queue, do: recover_queue(pilot), else: recover_at_start(pilot))}
     end
   end
 
   @spec poll(t(), map(), GenServer.server()) :: t()
+  def poll(%__MODULE__{mode: :queue} = queue, config, supervisor), do: poll_queue(queue, config, supervisor)
+
   def poll(%__MODULE__{} = pilot, config, supervisor) do
     cond do
       pilot.reason == :pilot_configuration_changed -> pilot
@@ -123,12 +133,16 @@ defmodule SymphonyElixir.InternalPilot do
   end
 
   @spec worker_result(t(), reference(), term(), map()) :: t()
+  def worker_result(%__MODULE__{mode: :queue, current: %__MODULE__{} = current} = queue, ref, result, config) do
+    finish_queue_run(queue, worker_result(current, ref, result, config))
+  end
+
   def worker_result(%__MODULE__{task: %Task{ref: ref}} = pilot, ref, result, config) do
     Process.demonitor(ref, [:flush])
     pilot = %{pilot | task: nil}
 
     case result do
-      {:demo, {:ok, evidence}} when pilot.mode == :api_demo ->
+      {:demo, {:ok, evidence}} when pilot.mode in @demo_modes ->
         accept_demo(pilot, evidence, config)
 
       {:demo, {:error, reason}} when is_atom(reason) ->
@@ -175,6 +189,10 @@ defmodule SymphonyElixir.InternalPilot do
   end
 
   @spec worker_down(t(), reference()) :: t()
+  def worker_down(%__MODULE__{mode: :queue, current: %__MODULE__{} = current} = queue, ref) do
+    finish_queue_run(queue, worker_down(current, ref))
+  end
+
   def worker_down(%__MODULE__{task: %Task{ref: ref}} = pilot, ref) do
     stop(%{pilot | task: nil}, :pilot_worker_exited)
   end
@@ -182,6 +200,11 @@ defmodule SymphonyElixir.InternalPilot do
   def worker_down(pilot, _ref), do: pilot
 
   @spec stop(t(), atom()) :: t()
+  def stop(%__MODULE__{mode: :queue, current: current} = queue, reason) do
+    if current, do: stop(current, reason)
+    %{queue | reason: reason}
+  end
+
   def stop(%__MODULE__{} = pilot, reason) do
     if pilot.task, do: Task.shutdown(pilot.task, :brutal_kill)
 
@@ -210,7 +233,99 @@ defmodule SymphonyElixir.InternalPilot do
     end
   end
 
+  defp recover_queue(queue) do
+    with {:ok, records} <- InternalAdmission.records(queue.journal),
+         :ok <- reconcile_queue_leases(queue, Map.to_list(records)) do
+      %{queue | reason: nil}
+    else
+      _failure -> %{queue | reason: :pilot_queue_recovery_blocked}
+    end
+  end
+
+  defp reconcile_queue_leases(queue, records) do
+    project = queue.scope.tracker.project_slug
+
+    Enum.reduce_while(records, :ok, fn
+      {{^project, _issue_id}, %{lease: nil}}, :ok ->
+        {:cont, :ok}
+
+      {{^project, _issue_id} = scope, _active}, :ok ->
+        case InternalDispatch.recover(queue.worker, queue.journal, scope) do
+          :ok -> {:cont, :ok}
+          error -> {:halt, error}
+        end
+
+      _foreign, :ok ->
+        {:halt, {:error, :pilot_queue_project_changed}}
+    end)
+  end
+
+  defp poll_queue(queue, config, supervisor) do
+    cond do
+      queue.reason == :pilot_configuration_changed -> queue
+      pinned(config) != queue.config -> stop(queue, :pilot_configuration_changed)
+      queue.reason == :pilot_queue_recovery_blocked -> recover_queue(queue)
+      queue.current != nil -> finish_queue_run(queue, poll(queue.current, config, supervisor))
+      true -> admit_next_queue_issue(queue, supervisor)
+    end
+  end
+
+  defp admit_next_queue_issue(queue, supervisor) do
+    tracker = queue.scope.tracker
+
+    with {:ok, records} <- InternalAdmission.records(queue.journal),
+         {:ok, candidates} <- Tracker.fetch_issues_by_states(Enum.filter(tracker.active_states, &start_state?/1)) do
+      candidates
+      |> Enum.sort_by(&{&1.priority || 5, if(&1.created_at, do: DateTime.to_unix(&1.created_at), else: 0), &1.id})
+      |> Enum.find_value(queue, &queue_candidate(queue, &1, records, supervisor))
+    else
+      _unavailable -> queue
+    end
+  end
+
+  defp queue_candidate(queue, issue, records, supervisor) do
+    scope = %{queue.scope | issue_id: issue.id}
+    workspace = Path.join(queue.workspace, "pilot@" <> (issue.id || ""))
+
+    with true <- uuid?(issue.id) and issue.dispatchable and after_cutover?(issue.created_at, queue.queue_since),
+         false <- Map.has_key?(records, {scope.tracker.project_slug, issue.id}) or File.exists?(workspace),
+         mode when not is_nil(mode) <- Enum.find(@demo_modes, &jira_description?(issue.description, jira_url(&1))),
+         {:ok, item} <- Linear.read(scope),
+         child = %{queue | scope: scope, mode: mode, workspace: workspace, history: %{}},
+         true <- eligible?(child, item) do
+      finish_queue_run(queue, observe(child, supervisor, {:ok, item}))
+    else
+      _skip -> nil
+    end
+  end
+
+  defp finish_queue_run(queue, %{reason: :pilot_lease_unresolved} = current) do
+    {_, blocked} = rows(current)
+    %{queue | current: nil, reason: :pilot_queue_recovery_blocked, history: Map.merge(queue.history, blocked)}
+  end
+
+  defp finish_queue_run(queue, %{reason: reason} = current) when is_nil(reason) or reason == :pilot_demo_pending do
+    %{queue | current: current}
+  end
+
+  defp finish_queue_run(queue, current) do
+    {_, blocked} = rows(current)
+    history = Map.merge(queue.history, blocked) |> Enum.sort_by(fn {_id, row} -> row.blocked_at end, {:desc, DateTime}) |> Enum.take(24)
+    %{queue | history: Map.new(history), current: nil}
+  end
+
+  defp after_cutover?(_created, nil), do: true
+  defp after_cutover?(%DateTime{} = created, cutoff), do: DateTime.compare(created, cutoff) != :lt
+  defp after_cutover?(_unknown, _cutoff), do: false
+
   @spec rows(t()) :: {map(), map()}
+  def rows(%__MODULE__{mode: :queue, current: nil, history: history}), do: {%{}, history}
+
+  def rows(%__MODULE__{mode: :queue, current: current, history: history}) do
+    {running, blocked} = rows(current)
+    {running, Map.merge(history, blocked)}
+  end
+
   def rows(%__MODULE__{item: %{issue: issue}, task: %Task{}} = pilot) do
     {provider, message} = running_phase(pilot)
 
@@ -250,7 +365,8 @@ defmodule SymphonyElixir.InternalPilot do
   defp running_phase(%{prepared: nil, run: %{phase: :planning}}), do: {:gemini, "Gemini is planning"}
   defp running_phase(%{prepared: nil, run: %{phase: :implementation}}), do: {:codex, "Codex is preparing the implementation"}
   defp running_phase(%{prepared: nil, run: %{phase: :review}}), do: {:claude, "Claude Code is reviewing the diff"}
-  defp running_phase(%{prepared: nil, run: %{phase: :human_review}}), do: {:gemini, "Gemini is producing the Bruno demos"}
+  defp running_phase(%{prepared: nil, run: %{phase: :human_review}, mode: :api_demo}), do: {:gemini, "Gemini is producing the Bruno demos"}
+  defp running_phase(%{prepared: nil, run: %{phase: :human_review}}), do: {:gemini, "Gemini is producing the browser demo"}
 
   defp running_phase(%{prepared: prepared}) do
     {prepared.decision.target.provider, "Internal phase: #{prepared.attempt.phase}"}
@@ -375,9 +491,10 @@ defmodule SymphonyElixir.InternalPilot do
   end
 
   defp launch_demo(pilot, supervisor) do
-    %{workspace: workspace, demo_runner: runner, run: %{artifact: %{revision: revision}}} = pilot
-    task = Task.Supervisor.async_nolink(supervisor, fn -> {:demo, Providers.demo(workspace, revision, runner)} end)
-    log(pilot, "started authenticated provider=gemini phase=demo client=bruno")
+    %{workspace: workspace, mode: mode, run: %{artifact: %{revision: revision}}} = pilot
+    {client, runner} = if mode == :api_demo, do: {"bruno", pilot.demo_runner}, else: {"browser", pilot.frontend_runner}
+    task = Task.Supervisor.async_nolink(supervisor, fn -> {:demo, Providers.demo(workspace, revision, runner, mode)} end)
+    log(pilot, "started authenticated provider=gemini phase=demo client=#{client}")
     %{pilot | prepared: nil, task: task, started_at: DateTime.utc_now(), reason: nil}
   end
 
@@ -394,7 +511,7 @@ defmodule SymphonyElixir.InternalPilot do
   end
 
   defp advance(pilot, :dispatch), do: pilot
-  defp advance(%{mode: :api_demo} = pilot, {:park, :human_review}), do: %{pilot | reason: :pilot_demo_pending}
+  defp advance(%{mode: mode} = pilot, {:park, :human_review}) when mode in @demo_modes, do: %{pilot | reason: :pilot_demo_pending}
   defp advance(pilot, {:park, :human_review}), do: advance_review(pilot)
   defp advance(pilot, {:park, reason}), do: %{pilot | reason: reason}
   defp advance(pilot, :retry), do: stop(pilot, :pilot_retry_requires_inspection)
@@ -447,7 +564,7 @@ defmodule SymphonyElixir.InternalPilot do
          body when is_binary(body) <- pilot.item.issue.description,
          true <- Repository.review_observed?(body, artifact),
          true <- pilot.mode not in @independent_modes or Providers.observed?(body, artifact.revision),
-         true <- pilot.mode != :api_demo or Inventory.demos_observed?(body) do
+         true <- demos_observed?(pilot.mode, body) do
       :ok
     else
       _unconfirmed -> {:error, :pilot_review_evidence_unconfirmed}
@@ -471,7 +588,15 @@ defmodule SymphonyElixir.InternalPilot do
 
   defp review_description(_pilot, _item), do: {:error, :codex_pilot_unverified_artifact}
   defp demo_description(%{mode: :api_demo, demo_evidence: evidence}, revision), do: Inventory.demos(evidence, revision)
+
+  defp demo_description(%{mode: mode, demo_evidence: evidence}, revision) when mode in [:ui_filter, :ui_sort],
+    do: SymphonyElixir.InternalPilotFrontend.demo(evidence, revision)
+
   defp demo_description(_pilot, _revision), do: {:ok, ""}
+
+  defp demos_observed?(:api_demo, body), do: Inventory.demos_observed?(body)
+  defp demos_observed?(mode, body) when mode in [:ui_filter, :ui_sort], do: SymphonyElixir.InternalPilotFrontend.demo_observed?(body)
+  defp demos_observed?(_mode, _body), do: true
 
   defp verify(%{mode: mode, run: %{phase: :planning, requirements_revision: requirements}, plan: %{revision: plan}})
        when mode in @independent_modes,
@@ -582,25 +707,46 @@ defmodule SymphonyElixir.InternalPilot do
   defp pilot_mode("codex"), do: :codex
   defp pilot_mode("multi_agent"), do: :multi_agent
   defp pilot_mode("api_demo"), do: :api_demo
+  defp pilot_mode("queue"), do: :queue
   defp pilot_mode(_default), do: :fixture
   defp jira_url(mode), do: @jira_origin <> "/browse/" <> jira_key(mode)
   defp jira_key(:fixture), do: "PILOT-1"
   defp jira_key(:codex), do: "PILOT-2"
   defp jira_key(:multi_agent), do: "PILOT-3"
   defp jira_key(:api_demo), do: "PILOT-4"
+  defp jira_key(:ui_filter), do: "PILOT-5"
+  defp jira_key(:ui_sort), do: "PILOT-6"
   defp criterion(:fixture), do: @criteria
   defp criterion(:api_demo), do: "inventory-availability-contract"
+  defp criterion(mode) when mode in [:ui_filter, :ui_sort], do: "inventory-catalog-interaction"
   defp criterion(_repository_mode), do: "version-label-normalization"
   defp policy_revision(:fixture), do: "synthetic-linear-v1"
   defp policy_revision(:codex), do: "personal-codex-v1"
   defp policy_revision(:multi_agent), do: "personal-multi-agent-v1"
   defp policy_revision(:api_demo), do: "personal-api-demo-v1"
+  defp policy_revision(mode) when mode in [:ui_filter, :ui_sort], do: "personal-frontend-demo-v1"
   defp jira_requirements(:fixture), do: @requirements
   defp jira_requirements(repository_mode), do: Repository.requirements(repository_mode)
 
-  defp demo_runner?("api_demo", {:ok, path}), do: absolute?(path)
-  defp demo_runner?(mode, :error), do: mode != "api_demo"
-  defp demo_runner?(_mode, _setting), do: false
+  defp configured_runners?("api_demo", {:ok, path}, :error), do: absolute?(path)
+  defp configured_runners?("queue", {:ok, api}, {:ok, frontend}), do: absolute?(api) and absolute?(frontend)
+  defp configured_runners?(mode, :error, :error), do: mode not in ["api_demo", "queue"]
+  defp configured_runners?(_mode, _api, _frontend), do: false
+
+  defp queue_since(_mode, nil), do: {:ok, nil}
+
+  defp queue_since("queue", value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, date, _offset} -> {:ok, date}
+      _invalid -> :error
+    end
+  end
+
+  defp queue_since(_mode, _value), do: :error
+
+  defp scoped_settings?("queue", settings), do: map_size(settings) == 4 and not Map.has_key?(settings, "issue_id")
+  defp scoped_settings?(_mode, %{"issue_id" => issue} = settings), do: map_size(settings) == 5 and uuid?(issue)
+  defp scoped_settings?(_mode, _settings), do: false
 
   defp fetch_jira(link, mode) do
     key = jira_key(mode)
