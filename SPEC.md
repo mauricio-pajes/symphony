@@ -926,6 +926,11 @@ Failure semantics:
 - `after_create` failure or timeout is fatal to workspace creation.
 - `before_run` failure or timeout is fatal to the current run attempt.
 - `after_run` failure or timeout is logged and ignored.
+
+The Elixir implementation also supports the optional `hooks.after_success`
+extension. It runs after a successful provider attempt and before the
+best-effort `after_run` hook. Its failure or timeout fails the attempt, so a
+workflow can require verified external evidence before completing a handoff.
 - `before_remove` failure or timeout is logged and ignored.
 
 ### 9.5 Safety Invariants

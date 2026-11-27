@@ -231,6 +231,14 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @spec run_after_success_hook(Path.t(), map() | String.t() | nil, worker_host()) :: :ok | {:error, term()}
+  def run_after_success_hook(workspace, issue_or_identifier, worker_host) do
+    case Config.settings!().hooks.after_success do
+      nil -> :ok
+      command -> run_hook(command, workspace, issue_context(issue_or_identifier), "after_success", worker_host)
+    end
+  end
+
   @spec run_after_run_hook(Path.t(), map() | String.t() | nil, worker_host()) :: :ok
   def run_after_run_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
     issue_context = issue_context(issue_or_identifier)

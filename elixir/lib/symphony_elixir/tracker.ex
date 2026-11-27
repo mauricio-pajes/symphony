@@ -51,11 +51,12 @@ defmodule SymphonyElixir.Tracker do
     settings = Config.settings!()
     tracker_settings = settings.tracker
     adapter = adapter_for_settings!(tracker_settings)
+    tool_adapter = if settings.agent.tracker_tools_enabled, do: adapter, else: nil
 
     %{
-      adapter: adapter,
+      adapter: tool_adapter,
       tracker_settings: tracker_settings,
-      tool_specs: adapter_agent_tool_specs(adapter),
+      tool_specs: adapter_agent_tool_specs(tool_adapter),
       secret_environment_names: Enum.uniq(adapter_secret_environment_names(adapter, tracker_settings) ++ jira_intake_secret_names(settings.agent.jira_intake))
     }
   end

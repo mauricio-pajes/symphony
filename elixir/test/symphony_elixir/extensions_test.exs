@@ -227,6 +227,18 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert SymphonyElixir.Tracker.bind_agent_tools().secret_environment_names == ["LINEAR_API_KEY"]
   end
 
+  test "a workflow can keep tracker reads while withholding agent tools" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_tools_enabled: false)
+    refute Config.settings!().agent.tracker_tools_enabled
+    assert SymphonyElixir.Tracker.adapter() == Adapter
+    binding = SymphonyElixir.Tracker.bind_agent_tools()
+    assert binding.tool_specs == []
+    assert binding.secret_environment_names == ["LINEAR_API_KEY"]
+
+    assert %{"success" => false} =
+             SymphonyElixir.Tracker.execute_bound_agent_tool(binding, "linear_graphql", %{})
+  end
+
   test "linear adapter delegates reads and advertises its native agent tool" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 

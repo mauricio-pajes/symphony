@@ -1580,6 +1580,8 @@ defmodule SymphonyElixir.CoreTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        hook_after_success: "test -f README.md && echo verified > review-gate",
+        hook_after_run: "test -f review-gate && echo cleaned > cleanup",
         codex_command: "#{codex_binary} app-server"
       )
 
@@ -1608,6 +1610,8 @@ defmodule SymphonyElixir.CoreTest do
       workspace = Path.join(workspace_root, workspace_name)
       assert File.exists?(workspace)
       assert File.exists?(Path.join(workspace, "README.md"))
+      assert File.read!(Path.join(workspace, "review-gate")) == "verified\n"
+      assert File.read!(Path.join(workspace, "cleanup")) == "cleaned\n"
     after
       File.rm_rf(test_root)
     end

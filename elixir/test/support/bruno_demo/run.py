@@ -14,29 +14,15 @@ import subprocess
 import sys
 import time
 from urllib.error import HTTPError
-from urllib.parse import urlsplit
-from urllib.request import Request, HTTPRedirectHandler, build_opener
 
 API = "http://127.0.0.1:8767"
-LINEAR = "https://api.linear.app/graphql"
 HERE = Path(__file__).resolve().parent
 SCENARIOS = {
     "available": ("NOTEBOOK-01", 200, {"sku": "NOTEBOOK-01", "on_hand": 14, "reserved": 3, "available": 11}),
     "missing": ("MISSING-99", 404, {"error": "item_not_found"}),
 }
-UPLOAD = """
-mutation StockroomDemoUpload($filename: String!, $size: Int!) {
-  fileUpload(filename: $filename, contentType: "video/mp4", size: $size, makePublic: false) {
-    success
-    uploadFile { uploadUrl assetUrl headers { key value } }
-  }
-}
-"""
-
-
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
-        return None
+sys.path.insert(0, str(HERE.parents[2] / "support"))
+from linear_video import upload
 
 
 class BrunoPreparationError(ValueError):
@@ -183,53 +169,10 @@ def capture_shot(recorder, file, stop, target, shot, hold_seconds):
             raise ValueError("The window recording did not finalize.")
 
 
-def https_url(value):
-    parsed = urlsplit(value)
-    return parsed.scheme == "https" and bool(parsed.hostname) and not parsed.username and not parsed.password
-
-
 def keychain_login():
     account = pwd.getpwuid(os.getuid()).pw_name
     return run("/usr/bin/security", "find-generic-password", "-a", account,
                "-s", "symphony-linear-personal-pilot", "-w").decode().strip()
-
-
-def upload(file, key):
-    opener = build_opener(NoRedirect())
-    body = json.dumps({"query": UPLOAD, "variables": {"filename": file.name, "size": file.stat().st_size}}).encode()
-    with opener.open(Request(LINEAR, data=body, headers={
-        "Authorization": key, "Content-Type": "application/json"
-    }, method="POST"), timeout=12) as response:
-        data = json.load(response)
-    payload = data.get("data", {}).get("fileUpload")
-    if not payload or not payload.get("success"):
-        raise ValueError("Linear declined the private video upload.")
-
-    upload_file = payload["uploadFile"]
-    asset, signed = upload_file["assetUrl"], upload_file["uploadUrl"]
-    if not https_url(signed) or not re.fullmatch(r"https://uploads\.linear\.app/[-/a-zA-Z0-9_]+(?:\.mp4)?", asset):
-        raise ValueError("Linear returned an unexpected video location.")
-    headers = {header["key"]: header["value"] for header in (upload_file["headers"] or [])}
-    headers.setdefault("Content-Type", "video/mp4")
-    video = file.read_bytes()
-    with opener.open(Request(signed, data=video, headers=headers, method="PUT"), timeout=22) as response:
-        if response.status not in range(200, 300):
-            raise ValueError("The private video upload failed.")
-
-    # Fetch the same private bytes back. Never forward the API key to a redirect.
-    try:
-        request = Request(asset, headers={"Authorization": key})
-        with opener.open(request, timeout=12) as fetched:
-            downloaded = fetched.read(len(video) + 1)
-    except HTTPError as error:
-        location = error.headers.get("Location", "")
-        if error.code not in [301, 302, 307, 308] or not https_url(location):
-            raise ValueError(f"Linear could not read back the private upload (HTTP {error.code}).") from None
-        with opener.open(location, timeout=12) as fetched:
-            downloaded = fetched.read(len(video) + 1)
-    if hashlib.sha256(downloaded).digest() != hashlib.sha256(video).digest():
-        raise ValueError("The private Linear asset differs from the verified recording.")
-    return asset
 
 
 def main():

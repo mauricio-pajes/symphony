@@ -20,6 +20,7 @@ polling:
 workspace:
   root: ~/code/symphony-workspaces
 hooks:
+  # Optional: use after_success for a required host-side review gate.
   after_create: |
     git clone --depth 1 https://github.com/openai/symphony .
     if command -v mise >/dev/null 2>&1; then
@@ -28,6 +29,7 @@ hooks:
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
 agent:
+  # Disable tracker_tools_enabled when a trusted hook owns tracker writes.
   max_concurrent_agents: 10
   max_turns: 20
   # Configure internal_pilot in a separate workflow for a single synthetic issue.

@@ -192,6 +192,19 @@ The [Personal Symphony design](../docs/personal-symphony-design.md) describes th
 workflow, centralized effects and terminal client. This example documents the current tracker-driven
 routing mode.
 
+Set `agent.tracker_tools_enabled: false` when trusted host hooks own tracker
+effects. Codex receives no tracker tool, and Symphony rejects its tracker
+tool calls. Scheduler reads and credential stripping still work.
+
+Use `hooks.after_success` to validate a completed agent's handoff before
+publishing it. This hook runs in the workspace after the provider returns
+success. A nonzero exit or timeout fails the attempt and follows normal retry
+handling. The existing `hooks.after_run` still runs for cleanup regardless of
+the outcome. The hook is responsible for validating the requested handoff and
+making its effects safe to retry. A retry includes the provider attempt while
+the issue is still eligible. See [the review gate ADR](../docs/adr-0011-private-demo-review-gate.md)
+for the Linear attachment protocol.
+
 ### Synthetic Linear-to-Human-Review pilot
 
 Use a separate workflow and workspace root for a single synthetic test issue.
