@@ -48,7 +48,7 @@ class LinearFixture:
         self.name = "Todo"
         self.state_id = TODO
         self.mode = mode
-        self.queue = mode in ("queue", "queue-crash")
+        self.queue = mode in ("queue", "queue-crash", "queue-retry")
         self.api = self.queue or mode in ("api", "api-demo-failed")
         self.multi = self.api or mode in ("multi", "multi-rejected")
         self.repository = self.multi or mode in ("codex", "codex-invalid")
@@ -62,6 +62,7 @@ class LinearFixture:
         self.queue_polled = threading.Event()
         self.queue_add = threading.Event()
         self.ledger_path = None
+        self.review_read_failed = False
 
     def request(self, query, variables):
         with self.lock:
@@ -75,6 +76,9 @@ class LinearFixture:
                 "id": ISSUE, "project": PROJECT, "review": REVIEW,
             }:
                 self.reads += 1
+                if self.mode == "queue-retry" and self.state_id == REVIEW and not self.review_read_failed:
+                    self.review_read_failed = True
+                    return 503, {"errors": [{"message": "Review observation temporarily unavailable"}]}
                 if self.block_read_for_crash():
                     self.read_blocked.set()
                     self.release_read.wait(15)
@@ -266,7 +270,8 @@ def run_case(args, mode):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                verify = {"crash": verify_crash, "queue-crash": verify_crash, "queue": verify_queue}.get(mode, verify_case)
+                verify = {"crash": verify_crash, "queue-crash": verify_crash, "queue": verify_queue,
+                          "queue-retry": verify_queue}.get(mode, verify_case)
                 verify(args, mode, root, server, log)
             except Exception:
                 if log.exists():
@@ -390,6 +395,16 @@ def write_api_stubs(binary_dir, plan_result, mode):
     demo_result = {"event": "result", "result": {"status": "SUCCESS", "structured_output": {
         "first": "missing", "emphasis": "body", "hold_seconds": 5,
     }}}
+    first_invalid_plan = ""
+    if mode == "queue-retry":
+        marker = shlex.quote(str(binary_dir / "invalid-plan-observed"))
+        invalid = {"event": "result", "result": {"status": "SUCCESS", "structured_output": {"summary": ""}}}
+        first_invalid_plan = f"""  if [ ! -f {marker} ]; then
+    touch {marker}
+    printf '%s\\n' {shlex.quote(json.dumps(invalid))}
+    exit 0
+  fi
+"""
     agy = binary_dir / "agy"
     agy.write_text(f"""#!/bin/sh
 set -eu
@@ -397,7 +412,7 @@ test -z "${{LINEAR_API_KEY-}}"
 if grep -Fq 'actual Bruno API client'; then
   printf '%s\\n' {shlex.quote(json.dumps(demo_result))}
 else
-  printf '%s\\n' {shlex.quote(json.dumps(plan_result))}
+{first_invalid_plan}  printf '%s\\n' {shlex.quote(json.dumps(plan_result))}
 fi
 """)
     agy.chmod(0o700)
@@ -473,8 +488,26 @@ def verify_queue(args, mode, root, server, log):
     try:
         assert fixture.queue_polled.wait(12)
         fixture.queue_add.set()
+        if mode == "queue-retry":
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline:
+                with urlopen(f"http://127.0.0.1:{port}/api/v1/state", timeout=2) as response:
+                    snapshot = json.load(response)
+                if snapshot["retrying"]:
+                    [retry] = snapshot["retrying"]
+                    assert retry["issue_id"] == ISSUE and retry["attempt"] == 1, retry
+                    assert retry["due_at"] > snapshot["generated_at"], retry
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError("The failed planner did not expose a retry for the original ticket")
         await_blocked(daemon, port, "human review", "Human Review")
         assert "### Bruno API demos" in fixture.description
+        if mode == "queue-retry":
+            assert fixture.review_read_failed
+            logs = daemon_logs(log)
+            assert logs.count("started authenticated provider=gemini phase=planning") == 2
+            assert logs.count("started authenticated provider=gemini phase=demo") == 1
     finally:
         stop_daemon(daemon)
     ledger = json.loads((root / "state" / "admission.json").read_text())
@@ -505,7 +538,7 @@ def main():
     for mode in ("normal", "codex", "codex-invalid", "multi", "multi-rejected", "lost-ack-applied", "lost-ack-active", "edited", "crash"):
         run_case(args, mode)
     if args.api_image:
-        for mode in ("api", "api-demo-failed", "queue", "queue-crash"):
+        for mode in ("api", "api-demo-failed", "queue", "queue-crash", "queue-retry"):
             run_case(args, mode)
 
 

@@ -347,9 +347,14 @@ Launch the daemon with a loopback observability port and point the [TUI](../tui/
 at that same address with `-url`. The daemon keeps polling when the TUI is
 closed. Linear retains Todo while the serial phases run and receives Human
 Review together with the approved diff and demo evidence. The TUI shows the
-active provider and recent outcomes for the running daemon. Unresolved
-Docker leases must drain before new work starts after a restart. Entries
-already recorded in the journal stay out of automatic dispatch.
+active provider, scheduled retries and recent outcomes. Retryable provider
+errors get two attempts on the same phase after short delays. The daemon
+checks the current issue source and the lease-free workspace before
+restarting the provider. Bruno retries request preparation once before
+capture. After an uncertain Human Review write, the daemon polls for
+matching evidence without repeating the write. Unresolved Docker leases
+must drain before new work starts after a restart. Recorded tickets
+stay out of new admission.
 
 See the [continuous queue ADR](../docs/adr-0011-continuous-stockroom-queue.md).
 

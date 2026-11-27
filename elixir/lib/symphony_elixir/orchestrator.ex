@@ -278,7 +278,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp put_internal_pilot(state, pilot) do
     {running, blocked} = InternalPilot.rows(pilot)
-    %{state | internal_pilot: pilot, running: running, blocked: blocked}
+    retries = InternalPilot.retry_rows(pilot)
+    %{state | internal_pilot: pilot, running: running, blocked: blocked, retry_attempts: retries}
   end
 
   defp maybe_dispatch(%State{internal_pilot: %InternalPilot{} = pilot} = state) do

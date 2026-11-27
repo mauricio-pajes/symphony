@@ -26,6 +26,16 @@ of known issue IDs. A new boot verifies and drains outstanding leases before
 admitting unrelated work. A failure with a settled lease can leave its issue
 in Todo and let the next eligible ticket progress.
 
+Retry transient provider errors and invalid structured output in the
+same phase after five and fifteen seconds. Recheck the run, workspace
+identity, absence of a lease and current Linear source before retrying.
+Leave provider configuration errors and requests for changes parked.
+Bruno may repeat transient-request preparation once before it starts
+recording or uploading. If a Human Review transition is uncertain, read
+Linear for up to twenty seconds to confirm the published evidence.
+The write and uploads are issued once. These in-process retries do not
+rearm earlier parked records after a daemon restart.
+
 The two frontend fixtures share a responsive catalog baseline. Codex
 enables one pre-existing interaction through a bounded JSON change. Four
 offline HTTP checks precede independent Claude Code review. Gemini directs

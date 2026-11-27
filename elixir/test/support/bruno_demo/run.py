@@ -39,6 +39,10 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+class BrunoPreparationError(ValueError):
+    """The transient request failed before a recording or upload started."""
+
+
 def run(*args, cwd=None, timeout=20):
     return subprocess.check_output(args, cwd=cwd, timeout=timeout, stderr=subprocess.PIPE)
 
@@ -110,6 +114,19 @@ def record(ui, recorder, directory, scenario, shots):
 
     file = directory / f"stockroom-{scenario}.mp4"
     stop = directory / f"stop-{scenario}"
+    for attempt in range(2):
+        try:
+            prepare_and_capture(ui, recorder, file, stop, url, status, shots)
+            break
+        except BrunoPreparationError:
+            if attempt:
+                raise
+            time.sleep(1)
+    verify_take(ui, file, status, marker)
+    return file
+
+
+def prepare_and_capture(ui, recorder, file, stop, url, status, shots):
     with subprocess.Popen(
         [str(ui), "shot", url, str(status), shots["emphasis"]],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -117,16 +134,22 @@ def record(ui, recorder, directory, scenario, shots):
         try:
             ready, _, _ = select.select([shot.stdout], [], [], 12)
             if not ready:
-                raise ValueError("Bruno did not prepare a transient request.")
+                raise BrunoPreparationError("Bruno did not prepare a transient request.")
             line = shot.stdout.readline()
             if not line:
-                raise ValueError(shot.stderr.read().strip() or "Bruno closed before recording.")
+                error = shot.stderr.read().strip()
+                if "the workspace sidebar could not be hidden" in error:
+                    raise BrunoPreparationError(error)
+                raise ValueError(error or "Bruno closed before recording.")
             capture_shot(recorder, file, stop, json.loads(line), shot, shots["hold_seconds"])
         finally:
             if shot.poll() is None:
                 shot.terminate()
-    verify_take(ui, file, status, marker)
-    return file
+                try:
+                    shot.wait(3)
+                except subprocess.TimeoutExpired:
+                    shot.kill()
+                    shot.wait()
 
 
 def capture_shot(recorder, file, stop, target, shot, hold_seconds):

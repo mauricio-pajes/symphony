@@ -27,6 +27,17 @@ defmodule SymphonyElixir.InternalPilot do
   @start_states ["todo", "to do"]
   @demo_modes [:api_demo, :ui_filter, :ui_sort]
   @independent_modes [:multi_agent | @demo_modes]
+  @provider_retry_delays [5_000, 15_000]
+  @retryable_provider_errors [
+    :gemini_pilot_invalid_plan,
+    :gemini_pilot_missing_structured_output,
+    :gemini_pilot_timeout,
+    :codex_pilot_invalid_proposal,
+    :codex_pilot_timeout,
+    :claude_pilot_invalid_review,
+    :claude_pilot_timeout
+  ]
+  @review_observation_window_ms 20_000
   @phase_specs %{
     planning: {:gemini, :research, "test ! -e result.txt"},
     implementation: {:codex, :implement, "printf 'fixture-response\\n' > result.txt"},
@@ -58,6 +69,9 @@ defmodule SymphonyElixir.InternalPilot do
     :reason,
     :current,
     :queue_since,
+    :provider_retry,
+    :review_observation_until,
+    provider_retries: %{},
     history: %{}
   ]
 
@@ -133,6 +147,29 @@ defmodule SymphonyElixir.InternalPilot do
   end
 
   @spec worker_result(t(), reference(), term(), map()) :: t()
+  def worker_result(
+        %__MODULE__{mode: :queue, current: %{task: %Task{ref: ref}, run: %{phase: phase}} = current} = queue,
+        ref,
+        {:provider, phase, {:error, reason}} = result,
+        config
+      )
+      when reason in @retryable_provider_errors do
+    attempt = Map.get(queue.provider_retries, phase, 0)
+
+    with delay when is_integer(delay) <- Enum.at(@provider_retry_delays, attempt),
+         true <- pinned(config) == queue.config,
+         :ok <- verify_provider_retry(current) do
+      Process.demonitor(ref, [:flush])
+      next_attempt = attempt + 1
+      retry = %{attempt: next_attempt, due_at_ms: System.monotonic_time(:millisecond) + delay, error: reason}
+      log(current, "retrying provider phase=#{phase} attempt=#{next_attempt} after_ms=#{delay} reason=#{reason}")
+
+      %{queue | current: %{current | task: nil}, provider_retry: retry, provider_retries: Map.put(queue.provider_retries, phase, next_attempt)}
+    else
+      _unavailable -> finish_queue_run(queue, worker_result(current, ref, result, config))
+    end
+  end
+
   def worker_result(%__MODULE__{mode: :queue, current: %__MODULE__{} = current} = queue, ref, result, config) do
     finish_queue_run(queue, worker_result(current, ref, result, config))
   end
@@ -201,7 +238,7 @@ defmodule SymphonyElixir.InternalPilot do
 
   @spec stop(t(), atom()) :: t()
   def stop(%__MODULE__{mode: :queue, current: current} = queue, reason) do
-    if current, do: stop(current, reason)
+    queue = if current, do: archive_queue_run(queue, stop(current, reason)), else: queue
     %{queue | reason: reason}
   end
 
@@ -265,8 +302,33 @@ defmodule SymphonyElixir.InternalPilot do
       queue.reason == :pilot_configuration_changed -> queue
       pinned(config) != queue.config -> stop(queue, :pilot_configuration_changed)
       queue.reason == :pilot_queue_recovery_blocked -> recover_queue(queue)
+      queue.provider_retry != nil -> poll_provider_retry(queue, config, supervisor)
       queue.current != nil -> finish_queue_run(queue, poll(queue.current, config, supervisor))
       true -> admit_next_queue_issue(queue, supervisor)
+    end
+  end
+
+  defp poll_provider_retry(%{current: current, provider_retry: retry} = queue, config, supervisor) do
+    if System.monotonic_time(:millisecond) >= retry.due_at_ms do
+      queue = %{queue | provider_retry: nil}
+
+      case verify_provider_retry(current) do
+        :ok -> finish_queue_run(queue, poll(current, config, supervisor))
+        {:error, _reason} -> finish_queue_run(queue, stop(current, :pilot_retry_requires_inspection))
+      end
+    else
+      queue
+    end
+  end
+
+  defp verify_provider_retry(%{run: %{run_id: run_id, generation: generation}, boot_id: boot_id} = pilot) do
+    with {:ok, %{run_id: ^run_id, generation: ^generation, boot_id: ^boot_id} = record} <-
+           InternalAdmission.lookup(pilot.journal, journal_scope(pilot)),
+         %{status: :ready, lease: nil, workspace_id: id} <- record,
+         {:ok, ^id} <- Worker.workspace_id(pilot.worker, pilot.workspace) do
+      :ok
+    else
+      _mismatch -> {:error, :pilot_retry_scope_changed}
     end
   end
 
@@ -301,7 +363,18 @@ defmodule SymphonyElixir.InternalPilot do
 
   defp finish_queue_run(queue, %{reason: :pilot_lease_unresolved} = current) do
     {_, blocked} = rows(current)
-    %{queue | current: nil, reason: :pilot_queue_recovery_blocked, history: Map.merge(queue.history, blocked)}
+    %{reset_queue_run(queue) | reason: :pilot_queue_recovery_blocked, history: Map.merge(queue.history, blocked)}
+  end
+
+  defp finish_queue_run(queue, %{reason: :pilot_review_transition_unconfirmed} = current) do
+    now = System.monotonic_time(:millisecond)
+    deadline = queue.review_observation_until || now + @review_observation_window_ms
+
+    if now < deadline do
+      %{queue | current: current, review_observation_until: deadline}
+    else
+      archive_queue_run(queue, current)
+    end
   end
 
   defp finish_queue_run(queue, %{reason: reason} = current) when is_nil(reason) or reason == :pilot_demo_pending do
@@ -309,10 +382,16 @@ defmodule SymphonyElixir.InternalPilot do
   end
 
   defp finish_queue_run(queue, current) do
+    archive_queue_run(queue, current)
+  end
+
+  defp archive_queue_run(queue, current) do
     {_, blocked} = rows(current)
     history = Map.merge(queue.history, blocked) |> Enum.sort_by(fn {_id, row} -> row.blocked_at end, {:desc, DateTime}) |> Enum.take(24)
-    %{queue | history: Map.new(history), current: nil}
+    %{reset_queue_run(queue) | history: Map.new(history)}
   end
+
+  defp reset_queue_run(queue), do: %{queue | current: nil, provider_retry: nil, provider_retries: %{}, review_observation_until: nil}
 
   defp after_cutover?(_created, nil), do: true
   defp after_cutover?(%DateTime{} = created, cutoff), do: DateTime.compare(created, cutoff) != :lt
@@ -361,6 +440,22 @@ defmodule SymphonyElixir.InternalPilot do
   end
 
   def rows(_pilot), do: {%{}, %{}}
+
+  @spec retry_rows(t()) :: map()
+  def retry_rows(%__MODULE__{current: %{item: %{issue: issue}, workspace: workspace}, provider_retry: %{} = retry}) do
+    row = %{
+      attempt: retry.attempt,
+      due_at_ms: retry.due_at_ms,
+      error: retry.error |> Atom.to_string() |> String.replace("_", " "),
+      identifier: issue.identifier,
+      issue_url: issue.url,
+      workspace_path: workspace
+    }
+
+    %{issue.id => row}
+  end
+
+  def retry_rows(_pilot), do: %{}
 
   defp running_phase(%{prepared: nil, run: %{phase: :planning}}), do: {:gemini, "Gemini is planning"}
   defp running_phase(%{prepared: nil, run: %{phase: :implementation}}), do: {:codex, "Codex is preparing the implementation"}
