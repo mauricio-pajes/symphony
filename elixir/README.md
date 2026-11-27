@@ -203,7 +203,7 @@ handling. The existing `hooks.after_run` still runs for cleanup regardless of
 the outcome. The hook is responsible for validating the requested handoff and
 making its effects safe to retry. A retry includes the provider attempt while
 the issue is still eligible. See [the review gate ADR](../docs/adr-0011-private-demo-review-gate.md)
-for the Linear attachment protocol.
+for the private upload and inline video protocol.
 
 ### Synthetic Linear-to-Human-Review pilot
 

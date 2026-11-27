@@ -81,6 +81,22 @@ def verify_asset(asset, key, digest, size):
         raise ValueError("The private Linear asset differs from the verified recording.")
 
 
+def inline_video_markdown(asset):
+    """Embed the private MP4 in the Linear editor's native video player."""
+    if not ASSET_URL.fullmatch(asset):
+        raise ValueError("The inline video must reference a verified Linear upload.")
+    return f"![Demo (MP4)]({asset})"
+
+
+def has_inline_video(description, asset):
+    if not ASSET_URL.fullmatch(asset):
+        return False
+    # Linear serializes its native video node as a file link on readback.
+    # Scope that representation to the dedicated section and exact asset.
+    video_block = rf"^## Demo\n+!?\[[^\]\n]*\]\({re.escape(asset)}\)$"
+    return bool(re.search(video_block, description or "", re.M))
+
+
 def ensure_attachment(graphql, key, issue_id, intent):
     """Create or confirm the native attachment using a persisted UUID and URL."""
     fields = ("id", "url", "title")
