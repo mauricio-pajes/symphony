@@ -52,7 +52,7 @@ discards headless results before deciding continuation, and the legacy
 successful-exit path can revisit an unchanged active ticket. The isolated path verifies bounded, versioned terminal proposals against
 the current lease, drains it and applies independently verified evidence.
 The opt-in daemon pilot adopts that path for one synthetic issue.
-Authenticated provider adapters and general admission remain pending.
+General authenticated provider execution and project-wide admission remain pending.
 A macOS fixture demonstrated the restart case: a background child wrote after
 the BEAM running its headless parent was forcibly terminated. The local
 container lease now demonstrates the required separation and verified drain.
@@ -65,6 +65,14 @@ observation, and cancellation after the source issue changed. An
 authenticated Linear Cloud test then confirmed the real ticket transition
 with an independent API read and a four-phase journal entry. That test used
 simulated Jira requirements and fixture workers.
+
+The [authenticated Codex pilot](adr-0008-personal-codex-pilot.md) then
+used Codex to propose a version-label normalization change for a disposable
+personal Git repository. The daemon applied the proposal offline and verified
+the unchanged diff and four passing checks through isolated worker leases.
+An independent Linear Cloud read confirmed Human Review, the matching diff,
+and test evidence. Jira remained simulated. This milestone validates the
+daemon-to-provider handoff and one review projection for a bounded fixture.
 
 ## Comparison with a Codex-only workflow
 

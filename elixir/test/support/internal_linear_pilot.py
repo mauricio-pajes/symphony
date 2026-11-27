@@ -2,9 +2,11 @@
 """Drive the Symphony escript against a local simulation of Linear GraphQL."""
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import socket
 import subprocess
 import tempfile
@@ -21,6 +23,12 @@ REVIEW = "33333333-3333-4333-8333-333333333333"
 TEAM = "44444444-4444-4444-8444-444444444444"
 PROJECT = "symphony-synthetic"
 JIRA = "https://jira.fixture.test/browse/PILOT-1"
+CODEX_JIRA = "https://jira.fixture.test/browse/PILOT-2"
+VERSION_NORMALIZER = (
+    "y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/\n"
+    "s/^[[:blank:]]*//\n"
+    "s/[[:blank:]]*$//\n"
+)
 ACKNOWLEDGEMENT = "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
 
 
@@ -32,6 +40,10 @@ class LinearFixture:
         self.name = "Todo"
         self.state_id = TODO
         self.mode = mode
+        self.codex = mode in ("codex", "codex-invalid")
+        self.description = CODEX_JIRA if self.codex else JIRA
+        if mode == "normal":
+            self.description = f"[{JIRA}](<{JIRA}>)"
         self.unexpected = []
         self.read_blocked = threading.Event()
         self.release_read = threading.Event()
@@ -55,7 +67,7 @@ class LinearFixture:
                         "id": ISSUE,
                         "identifier": "SYMP-1",
                         "title": title,
-                        "description": f"[{JIRA}](<{JIRA}>)" if self.mode == "normal" else JIRA,
+                        "description": self.description,
                         "url": "https://linear.example.test/issue/SYMP-1",
                         "archivedAt": None,
                         "team": {"id": TEAM},
@@ -64,11 +76,18 @@ class LinearFixture:
                     "workflowState": {"id": REVIEW, "name": "Human Review", "team": {"id": TEAM}},
                 }}
 
-            if "mutation SymphonyPilotHumanReview" in query and variables == {"id": ISSUE, "stateId": REVIEW}:
+            expected = {"id": ISSUE, "stateId": REVIEW}
+            if self.codex:
+                description = variables.get("description", "")
+                if (description.startswith(CODEX_JIRA) and "### Symphony pilot evidence" in description
+                        and "Offline checks passed (4/4)" in description):
+                    expected["description"] = description
+            if "mutation SymphonyPilotHumanReview" in query and variables == expected:
                 self.changes += 1
                 if self.mode == "lost-ack-active":
                     return 503, {"errors": [{"message": "Mock acknowledgement lost without applying mutation"}]}
                 self.name, self.state_id = "Human Review", REVIEW
+                self.description = variables.get("description", self.description)
                 if self.mode == "lost-ack-applied":
                     return 503, {"errors": [{"message": "Mock acknowledgement lost after applying mutation"}]}
                 return 200, {"data": {"issueUpdate": {
@@ -112,6 +131,7 @@ def write_workflow(root, server, args):
     journal = root / "state"
     workspace.mkdir()
     journal.mkdir(mode=0o700)
+    implementation = "    implementation: codex\n" if server.fixture.codex else ""
     workflow = root / "WORKFLOW.md"
     workflow.write_text(f"""---
 tracker:
@@ -127,7 +147,7 @@ workspace:
   root: {json.dumps(str(workspace))}
 agent:
   internal_pilot:
-    issue_id: "{ISSUE}"
+{implementation}    issue_id: "{ISSUE}"
     human_review_state_id: "{REVIEW}"
     state_directory: {json.dumps(str(journal))}
     docker_socket: {json.dumps(args.socket)}
@@ -141,13 +161,17 @@ Synthetic internal pilot.
 
 
 def start_daemon(binary, workflow, port, log):
+    env = {**os.environ, "ERL_FLAGS": "+S 4:4 +SDcpu 2 +SDio 2", "LINEAR_API_KEY": "must-not-reach-provider"}
+    local_bin = workflow.parent / "bin"
+    if local_bin.is_dir():
+        env["PATH"] = os.pathsep.join([str(local_bin), env["PATH"]])
     with log.open("a") as output:
         return subprocess.Popen(
             [str(binary), ACKNOWLEDGEMENT, "--port", str(port), "--logs-root", str(log.parent / "logs"), str(workflow)],
             cwd=workflow.parent,
             stdout=output,
             stderr=subprocess.STDOUT,
-            env={**os.environ, "ERL_FLAGS": "+S 4:4 +SDcpu 2 +SDio 2"},
+            env=env,
         )
 
 
@@ -207,9 +231,14 @@ def run_case(args, mode):
 
 def verify_case(args, mode, root, server, log):
     workflow = write_workflow(root, server, args)
+    if server.fixture.codex:
+        source = VERSION_NORMALIZER if mode == "codex" else VERSION_NORMALIZER + "w artifact.log\n"
+        write_codex_fixture(root, source)
     port = daemon_port()
     reason, state, mutations, generation = {
         "normal": ("human review", "Human Review", 1, 4),
+        "codex": ("human review", "Human Review", 1, 3),
+        "codex-invalid": ("codex pilot invalid proposal", "Todo", 0, 1),
         "lost-ack-applied": ("human review", "Human Review", 1, 4),
         "lost-ack-active": ("pilot review transition unconfirmed", "Todo", 1, 4),
         "edited": (("pilot worker settlement blocked", "pilot issue changed"), "Todo", 0, 1),
@@ -223,19 +252,30 @@ def verify_case(args, mode, root, server, log):
     ledger = json.loads((root / "state" / "admission.json").read_text())
     [record] = ledger["records"]
     expected_disposition = {"Human Review": "human_review", "Todo": "review_pending"}[state]
-    if mode == "edited":
+    if mode in ("edited", "codex-invalid"):
         expected_disposition = "parked"
     assert record["status"] == expected_disposition and record["generation"] == generation and record["lease"] is None, record
 
+    workspace = root / "workspaces" / ("pilot@" + ISSUE)
     if generation == 4:
-        assert (root / "workspaces" / ("pilot@" + ISSUE) / "result.txt").read_text() == "fixture-response\n"
+        assert (workspace / "result.txt").read_text() == "fixture-response\n"
     daemon_output = daemon_logs(log)
-    assert "read simulated Jira requirements key=PILOT-1" in daemon_output, daemon_output
+    expected_key = "PILOT-2" if server.fixture.codex else "PILOT-1"
+    assert f"read simulated Jira requirements key={expected_key}" in daemon_output, daemon_output
     assert daemon_output.count("started phase=") == generation
+    if mode == "codex":
+        assert "received bounded Codex proposal" in daemon_output, daemon_output
+        assert (workspace / "normalize.sed").read_text() == VERSION_NORMALIZER
+        diff = subprocess.check_output(["git", "diff", "--no-ext-diff", "--no-textconv", "HEAD"], cwd=workspace)
+        assert diff.decode().rstrip() in server.fixture.description
+        assert hashlib.sha256(diff).hexdigest() in server.fixture.description
+    elif mode == "codex-invalid":
+        assert (workspace / "normalize.sed").read_text() == VERSION_NORMALIZER.splitlines(keepends=True)[0]
+        assert not (workspace / "artifact.log").exists()
 
     restarted = start_daemon(args.binary, workflow, port, log)
     try:
-        after_restart = "pilot parked after restart" if mode == "edited" else reason
+        after_restart = "pilot parked after restart" if mode in ("edited", "codex-invalid") else reason
         await_blocked(restarted, port, after_restart, state)
     finally:
         stop_daemon(restarted)
@@ -249,6 +289,22 @@ def verify_case(args, mode, root, server, log):
         for line in daemon_output.splitlines():
             if "Internal pilot" in line:
                 print(line)
+
+
+def write_codex_fixture(root, source):
+    path = root / "bin" / "codex"
+    path.parent.mkdir()
+    event = json.dumps({"type": "item.completed", "item": {
+        "type": "agent_message", "text": json.dumps({"source": source}),
+    }})
+    path.write_text(f"""#!/bin/sh
+set -eu
+test -z "${{LINEAR_API_KEY-}}"
+test ! -e normalize.sed
+grep -q 'Acceptance criteria:'
+printf '%s\\n' {shlex.quote(event)}
+""")
+    path.chmod(0o700)
 
 
 def verify_crash(args, _mode, root, server, log):
@@ -286,7 +342,7 @@ def main():
     parser.add_argument("--image", required=True)
     args = parser.parse_args()
     args.binary = args.binary.resolve()
-    for mode in ("normal", "lost-ack-applied", "lost-ack-active", "edited", "crash"):
+    for mode in ("normal", "codex", "codex-invalid", "lost-ack-applied", "lost-ack-active", "edited", "crash"):
         run_case(args, mode)
 
 

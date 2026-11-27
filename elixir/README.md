@@ -245,8 +245,27 @@ python3 test/support/internal_linear_pilot.py \
 The fixture checks the daemon's HTTP API, observes the simulated Linear
 transition, and verifies no duplicate transition after restart. It also
 exercises a lost response before and after the update, a changed ticket,
-and daemon recovery with an attached worker.
+and daemon recovery with an attached worker. Its Codex case substitutes
+a local CLI stub, checks that the tracker credential stays off the provider
+process, and compares the inline Linear diff with the Git working tree.
 See the [pilot integration ADR](../docs/adr-0007-synthetic-linear-pilot.md).
+
+#### Authenticated Codex pilot
+
+For the version-label test, add `implementation: codex` under
+`agent.internal_pilot` and use `https://jira.fixture.test/browse/PILOT-2`
+as the Linear test issue description. Start with a fresh issue UUID and
+private pilot directories. The host needs Git and a `codex` CLI on `PATH`
+with an existing login. Symphony initializes a local Git repository for
+the test and keeps the resulting diff in its pilot workspace.
+
+Codex receives the synthetic requirements, baseline and fixed checks in a
+tool-disabled session. The offline worker applies the bounded proposal and
+runs the four checks against the resulting working tree. The daemon checks
+the diff across the implementation and validation phases. On success it
+adds the inline diff, its SHA-256 and test results to the ticket in the same
+Linear update that moves it to Human Review. Use the [Codex pilot ADR](../docs/adr-0008-personal-codex-pilot.md)
+for the execution boundary and restart behavior.
 
 ### Isolated internal phase fixture
 

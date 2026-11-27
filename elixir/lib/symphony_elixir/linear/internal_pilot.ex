@@ -24,6 +24,15 @@ defmodule SymphonyElixir.Linear.InternalPilot do
   }
   """
 
+  @move_with_evidence """
+  mutation SymphonyPilotHumanReview($id: String!, $stateId: String!, $description: String!) {
+    issueUpdate(id: $id, input: {stateId: $stateId, description: $description}) {
+      success
+      issue { id state { id name } }
+    }
+  }
+  """
+
   @type item :: %{issue: Issue.t(), state_id: String.t(), team_id: String.t()}
   @type scope :: %{issue_id: String.t(), review_id: String.t(), tracker: map()}
 
@@ -52,9 +61,11 @@ defmodule SymphonyElixir.Linear.InternalPilot do
     end
   end
 
-  @spec move_to_review(scope()) :: :ok | {:error, term()}
-  def move_to_review(%{issue_id: id, review_id: review, tracker: tracker}) do
-    with {:ok, data} <- graphql(tracker, @move, %{id: id, stateId: review}),
+  @spec move_to_review(scope(), String.t() | nil) :: :ok | {:error, term()}
+  def move_to_review(%{issue_id: id, review_id: review, tracker: tracker}, description) do
+    {query, vars} = update_input(id, review, description)
+
+    with {:ok, data} <- graphql(tracker, query, vars),
          %{"success" => true, "issue" => %{"id" => ^id, "state" => %{"id" => ^review, "name" => "Human Review"}}} <- data["issueUpdate"] do
       :ok
     else
@@ -62,6 +73,11 @@ defmodule SymphonyElixir.Linear.InternalPilot do
       _unexpected -> {:error, :pilot_review_transition_unconfirmed}
     end
   end
+
+  defp update_input(id, review, nil), do: {@move, %{id: id, stateId: review}}
+
+  defp update_input(id, review, description),
+    do: {@move_with_evidence, %{id: id, stateId: review, description: description}}
 
   defp graphql(tracker, query, vars) do
     request = fn payload, headers ->

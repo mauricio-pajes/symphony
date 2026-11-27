@@ -43,7 +43,7 @@ defmodule SymphonyElixir.HeadlessAgent do
         :binary,
         :exit_status,
         args: Enum.map(["-c", ~s(exec "$@" < "$0" 2>/dev/null), input, executable | args], &String.to_charlist/1),
-        cd: String.to_charlist(if(provider == :classifier, do: scratch, else: workspace)),
+        cd: String.to_charlist(if(provider in [:classifier, :codex_proposal], do: scratch, else: workspace)),
         env: Enum.map(opts[:secret_names] || [], &{String.to_charlist(&1), false}),
         line: 8_388_608
       ])
@@ -132,8 +132,8 @@ defmodule SymphonyElixir.HeadlessAgent do
   defp parse_result(:gemini, {:ok, %{"event" => "result", "result" => %{"status" => "SUCCESS", "response" => result}}}, _previous)
        when is_binary(result), do: {:ok, result}
 
-  defp parse_result(:classifier, {:ok, %{"type" => "item.completed", "item" => %{"type" => "agent_message", "text" => result}}}, _previous)
-       when is_binary(result), do: {:ok, result}
+  defp parse_result(provider, {:ok, %{"type" => "item.completed", "item" => %{"type" => "agent_message", "text" => result}}}, _previous)
+       when provider in [:classifier, :codex_proposal] and is_binary(result), do: {:ok, result}
 
   defp parse_result(_provider, _event, previous), do: previous
 end
