@@ -14,6 +14,13 @@ defmodule SymphonyElixir.InternalContainerWorker do
   @label "io.symphony.phase-lease"
   @control_timeout_ms 5_000
   @max_wait_ms 1_800_000
+  @max_result_bytes 8192
+  @outcome_statuses %{
+    "succeeded" => :succeeded,
+    "retryable" => :retryable,
+    "blocked" => :blocked,
+    "changes_requested" => :changes_requested
+  }
 
   @enforce_keys [:socket, :engine_id, :workspace_root]
   defstruct @enforce_keys
@@ -21,6 +28,8 @@ defmodule SymphonyElixir.InternalContainerWorker do
   @opaque t :: %__MODULE__{socket: Path.t(), engine_id: String.t(), workspace_root: Path.t()}
   @type command :: %{image: String.t(), argv: [String.t()]}
   @opaque lease :: %{attempt_id: InternalAdmission.attempt_id(), identity: String.t()}
+  @type candidate :: %{version: 1, status: :succeeded | :retryable | :blocked | :changes_requested}
+  @opaque result :: %{attempt_id: InternalAdmission.attempt_id(), identity: String.t(), candidate: candidate() | nil}
 
   @doc "Binds the local worker to a Unix endpoint and the engine currently behind it."
   @spec open(Path.t(), Path.t()) :: {:ok, t()} | {:error, term()}
@@ -67,9 +76,9 @@ defmodule SymphonyElixir.InternalContainerWorker do
     end
   end
 
-  @doc "Starts an attached lease and observes the exit code. Drain even if execution returns an error."
-  @spec run(t(), lease(), pos_integer()) :: {:ok, non_neg_integer()} | {:error, term()}
-  def run(worker, %{attempt_id: attempt_id, identity: identity}, timeout)
+  @doc "Starts one attached lease and reads its terminal proposal. Drain even after an execution error."
+  @spec run(t(), lease(), pos_integer()) :: {:ok, result()} | {:error, term()}
+  def run(worker, %{attempt_id: attempt_id, identity: identity} = lease, timeout)
       when is_integer(timeout) and timeout in 1..@max_wait_ms do
     with {:ok, id} <- container_id(worker, identity),
          :ok <- check_engine(worker),
@@ -78,7 +87,7 @@ defmodule SymphonyElixir.InternalContainerWorker do
          {:ok, %{"StatusCode" => status} = result} when is_integer(status) and status >= 0 <-
            request(worker.socket, :post, "/containers/" <> id <> "/wait?condition=not-running", 200, receive_timeout: timeout),
          nil <- Map.get(result, "Error") do
-      {:ok, status}
+      {:ok, Map.put(lease, :candidate, terminal_outcome(worker, id, status))}
     else
       {:ok, :absent} -> {:error, :container_missing}
       {:ok, {:present, _id}} -> {:error, :container_already_started}
@@ -86,6 +95,17 @@ defmodule SymphonyElixir.InternalContainerWorker do
       _invalid -> {:error, :invalid_container_exit}
     end
   end
+
+  @doc "Returns the scheduler's durable binding for an attached lease."
+  @spec binding(lease()) :: {InternalAdmission.attempt_id(), String.t()}
+  def binding(lease), do: {lease.attempt_id, lease.identity}
+
+  @doc "Accepts a terminal proposal only for the lease that produced it."
+  @spec outcome(lease(), result()) :: {:ok, candidate() | nil} | {:error, :stale_worker_result}
+  def outcome(%{attempt_id: attempt_id, identity: identity}, %{attempt_id: attempt_id, identity: identity, candidate: candidate}),
+    do: {:ok, candidate}
+
+  def outcome(_lease, _result), do: {:error, :stale_worker_result}
 
   @doc """
   Removes the container as a unit and confirms the recorded identity is absent.
@@ -186,7 +206,7 @@ defmodule SymphonyElixir.InternalContainerWorker do
         ReadonlyRootfs: true,
         PidsLimit: 128,
         Memory: 536_870_912,
-        LogConfig: %{Type: "none"},
+        LogConfig: %{Type: "local", Config: %{"max-size" => "64k", "max-file" => "1", "compress" => "false"}},
         Tmpfs: %{"/tmp" => "rw,noexec,nosuid,nodev,size=67108864"},
         Mounts: [
           %{
@@ -199,6 +219,30 @@ defmodule SymphonyElixir.InternalContainerWorker do
         ]
       }
     }
+  end
+
+  defp terminal_outcome(worker, id, 0) do
+    path = "/containers/" <> id <> "/logs?stdout=true&tail=1"
+
+    with {:ok, <<1, 0, 0, 0, size::32, entry::binary-size(size)>>} <-
+           request(worker.socket, :get, path, 200, into: &collect_result/2, decode_body: false, compressed: false),
+         {:ok, %{"version" => 1, "status" => name} = decoded} when map_size(decoded) == 2 <- Jason.decode(entry),
+         {:ok, status} <- Map.fetch(@outcome_statuses, name) do
+      %{version: 1, status: status}
+    else
+      _invalid -> nil
+    end
+  end
+
+  defp terminal_outcome(_worker, _id, _status), do: nil
+
+  defp collect_result({:data, chunk}, {request, response}) do
+    # Docker's non-TTY stdout record has an eight-byte multiplex header.
+    if byte_size(response.body) + byte_size(chunk) <= @max_result_bytes + 8 do
+      {:cont, {request, %{response | body: response.body <> chunk}}}
+    else
+      {:halt, {request, %{response | body: :outcome_too_large}}}
+    end
   end
 
   defp create_container(worker, attempt_id, options) do

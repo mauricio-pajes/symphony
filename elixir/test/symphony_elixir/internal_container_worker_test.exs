@@ -61,11 +61,11 @@ defmodule SymphonyElixir.InternalContainerWorkerTest do
     assert String.starts_with?(identity, "docker:")
 
     assert {:error, :lease_unresolved} = prepare(run, journal, fixture, :research, @readonly)
-    assert {:ok, 0} = InternalContainerWorker.run(worker, plan.lease, 5000)
+    assert {:ok, plan_result} = InternalContainerWorker.run(worker, plan.lease, 5000)
     assert {:error, :container_already_started} = InternalContainerWorker.run(worker, plan.lease, 5000)
 
     assert {:ok, implementing, :dispatch} =
-             InternalDispatch.settle(worker, journal, planning, plan, success(), fn ->
+             InternalDispatch.settle(worker, journal, planning, plan, plan_result, fn ->
                {:planning, "req-1", "plan-1", ["response-field"]}
              end)
 
@@ -75,12 +75,15 @@ defmodule SymphonyElixir.InternalContainerWorkerTest do
     refute File.exists?(Path.join(workspace, "artifact"))
 
     assert {:error, :stale_attempt} =
-             InternalDispatch.settle(worker, journal, building, plan, success(), fn -> flunk("stale result was verified") end)
+             InternalDispatch.settle(worker, journal, building, plan, plan_result, fn -> flunk("stale result was verified") end)
 
-    assert {:ok, 0} = InternalContainerWorker.run(worker, build.lease, 5000)
+    assert {:error, :stale_worker_result} =
+             InternalDispatch.settle(worker, journal, building, build, plan_result, fn -> flunk("stale result was verified") end)
+
+    assert {:ok, build_result} = InternalContainerWorker.run(worker, build.lease, 5000)
 
     assert {:ok, validating, :dispatch} =
-             InternalDispatch.settle(worker, journal, building, build, success(), fn ->
+             InternalDispatch.settle(worker, journal, building, build, build_result, fn ->
                assert {:error, :container_missing} = InternalContainerWorker.run(worker, build.lease, 5000)
                assert File.read!(Path.join(workspace, "artifact")) == "fixture"
                {:implementation, "req-1", %{ref: "artifact", revision: "rev-1"}}
@@ -89,26 +92,62 @@ defmodule SymphonyElixir.InternalContainerWorkerTest do
     checks = @readonly <> "\ntest \"$(cat artifact)\" = fixture"
     assert {:ok, testing, check} = prepare(validating, journal, fixture, :test, checks)
     assert check.decision.target.provider == :codex
-    assert {:ok, 0} = InternalContainerWorker.run(worker, check.lease, 5000)
+    assert {:ok, check_result} = InternalContainerWorker.run(worker, check.lease, 5000)
 
     assert {:ok, reviewing, :dispatch} =
-             InternalDispatch.settle(worker, journal, testing, check, success(), fn ->
+             InternalDispatch.settle(worker, journal, testing, check, check_result, fn ->
                {:validation, "req-1", "rev-1", %{"response-field" => "check-1"}}
              end)
 
     assert {:ok, in_review, review} = prepare(reviewing, journal, fixture, :review, checks, :codex)
     assert review.decision.target.provider == :claude
     assert review.attempt.handoff.open_criteria == []
-    assert {:ok, 0} = InternalContainerWorker.run(worker, review.lease, 5000)
+    assert {:ok, review_result} = InternalContainerWorker.run(worker, review.lease, 5000)
 
     assert {:ok, %{phase: :human_review}, {:park, :human_review}} =
-             InternalDispatch.settle(worker, journal, in_review, review, success(), fn ->
+             InternalDispatch.settle(worker, journal, in_review, review, review_result, fn ->
                {:review, "req-1", "rev-1", {:approved, "review-1"}}
              end)
 
     assert {:ok, next_boot} = InternalAdmission.open(fixture.state, fixture.workspace_root, "boot-b")
     assert {:ok, %{status: :parked, generation: 4, lease: nil}} = InternalAdmission.lookup(next_boot, @scope)
     assert {:error, :not_dispatchable} = InternalAdmission.reserve(next_boot, @scope, {"run-1", "boot-b", 5})
+  end
+
+  test "rejects a terminal proposal when the worker exits unsuccessfully", fixture do
+    {:ok, journal} = InternalAdmission.initialize(fixture.state, fixture.workspace_root, @boot)
+    {:ok, workspace_id} = InternalContainerWorker.workspace_id(fixture.worker, fixture.workspace)
+    :ok = InternalAdmission.admit(journal, @scope, "run-1", workspace_id)
+    {:ok, run} = workflow()
+
+    script = success() <> "\nexit 19"
+    assert {:ok, running, prepared} = prepare(run, journal, fixture, :research, script)
+    assert {:ok, result} = InternalContainerWorker.run(fixture.worker, prepared.lease, 5000)
+
+    assert {:ok, _, {:park, :invalid_outcome}} =
+             InternalDispatch.settle(fixture.worker, journal, running, prepared, result, fn ->
+               flunk("a failed worker's output was used as verification")
+             end)
+
+    assert {:ok, %{status: :parked, lease: nil}} = InternalAdmission.lookup(journal, @scope)
+  end
+
+  test "parks when the terminal stdout record exceeds the protocol limit", fixture do
+    {:ok, journal} = InternalAdmission.initialize(fixture.state, fixture.workspace_root, @boot)
+    {:ok, workspace_id} = InternalContainerWorker.workspace_id(fixture.worker, fixture.workspace)
+    :ok = InternalAdmission.admit(journal, @scope, "run-1", workspace_id)
+    {:ok, run} = workflow()
+
+    script = ~S(head -c 12288 /dev/zero | tr '\000' x; echo; exit 0)
+    assert {:ok, running, prepared} = prepare(run, journal, fixture, :research, script)
+    assert {:ok, result} = InternalContainerWorker.run(fixture.worker, prepared.lease, 5000)
+
+    assert {:ok, _, {:park, :invalid_outcome}} =
+             InternalDispatch.settle(fixture.worker, journal, running, prepared, result, fn ->
+               flunk("oversized output was used as verification")
+             end)
+
+    assert {:ok, %{status: :parked, lease: nil}} = InternalAdmission.lookup(journal, @scope)
   end
 
   test "quarantines a timed-out writer until the next scheduler drains its container", fixture do
@@ -119,10 +158,10 @@ defmodule SymphonyElixir.InternalContainerWorkerTest do
 
     {:ok, run} = workflow()
     {:ok, running, planning} = prepare(run, journal, fixture, :research, @readonly)
-    {:ok, 0} = InternalContainerWorker.run(worker, planning.lease, 5000)
+    {:ok, planning_result} = InternalContainerWorker.run(worker, planning.lease, 5000)
 
     {:ok, implement, :dispatch} =
-      InternalDispatch.settle(worker, journal, running, planning, success(), fn ->
+      InternalDispatch.settle(worker, journal, running, planning, planning_result, fn ->
         {:planning, "req-1", "plan-1", ["one"]}
       end)
 
@@ -191,7 +230,9 @@ defmodule SymphonyElixir.InternalContainerWorkerTest do
     System.cmd("docker", ["--host", "unix://" <> socket | args], stderr_to_stdout: true, env: env)
   end
 
-  defp external_worker(fixture, %{lease: %{attempt_id: {run, boot, generation}, identity: identity}}) do
+  defp external_worker(fixture, %{lease: lease}) do
+    {{run, boot, generation}, identity} = InternalContainerWorker.binding(lease)
+
     script = ~S"""
     [socket, root, run, boot, generation, identity] = System.argv()
     {:ok, _} = Application.ensure_all_started(:req)
@@ -278,11 +319,11 @@ defmodule SymphonyElixir.InternalContainerWorkerTest do
       request: request,
       profiles: profiles,
       availability: %Availability{now_ms: 100, identities: identities, account_slots: slots},
-      command_for: fn _target -> {:ok, %{image: fixture.image, argv: ["/bin/sh", "-ec", script]}} end
+      command_for: fn _target -> {:ok, %{image: fixture.image, argv: ["/bin/sh", "-ec", script <> "\n" <> success()]}} end
     }
 
     InternalDispatch.prepare(fixture.worker, journal, run, @boot, fixture.workspace, routing)
   end
 
-  defp success, do: %{version: 1, status: :succeeded}
+  defp success, do: ~S(printf '%s\n' '{"version":1,"status":"succeeded"}')
 end

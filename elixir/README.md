@@ -201,7 +201,9 @@ in an isolated local Docker container, and parks the item at Human Review.
 It also demonstrates a surviving container descendant after the worker
 BEAM exits and verifies recovery before the workspace can be reused.
 A separate case recovers a stopped container after a lost create
-acknowledgement.
+acknowledgement. The worker's final stdout line must be a versioned JSON
+proposal such as `{"version":1,"status":"succeeded"}`. The host checks the
+lease and outcome before applying its independent verification.
 
 Run from `elixir/` with a trusted local Linux Docker Engine. Set its Unix
 socket path and the ID of an installed BusyBox image.

@@ -16,8 +16,8 @@ Design revision 2 · Approved for incremental implementation · November 26, 202
 
 The deterministic policy, internal phases and durable launch boundary have
 been exercised with a local container fixture. Stage 2 activation still
-requires production scheduling, authenticated provider adapters and
-revision-bound outcomes. Add full checkpoint and effect recovery in stage
+requires production scheduling and authenticated provider adapters that
+emit lease-bound outcomes. Add full checkpoint and effect recovery in stage
 3. Allow additional graph behavior and parallel work when the pilot identifies a repeatable
 need. Measure the public snapshot load before adding push transport.
 
@@ -49,9 +49,9 @@ Routed headless providers now enforce an elapsed-time budget even while
 emitting progress. The local deadline test also checks that a background
 descendant does not write after timeout. The current production runner
 discards headless results before deciding continuation, and the legacy
-successful-exit path can revisit an unchanged active ticket. Before enabling
-internal dispatch, bind typed outcomes to the durable lease and prove that
-draining an attempt precedes workspace reuse across host cancellation and restart.
+successful-exit path can revisit an unchanged active ticket. The isolated path verifies bounded, versioned terminal proposals against
+the current lease, drains it and applies independently verified evidence.
+Provider adapters and the tracker scheduler still need to adopt that path.
 A macOS fixture demonstrated the restart case: a background child wrote after
 the BEAM running its headless parent was forcibly terminated. The local
 container lease now demonstrates the required separation and verified drain.

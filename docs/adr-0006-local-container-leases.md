@@ -23,10 +23,15 @@ root and run, boot and attempt generation.
 2. It persists a reservation, creates a stopped container and attaches the
    engine and container identity to the journal.
 3. It hands the attached lease to one supervised task. The task starts the
-   container and observes its exit status. The scheduler owns the journal.
+   container and reads the final bounded stdout record after a successful
+   exit. A small versioned JSON record proposes the outcome. The task
+   binds the proposal to the observed engine lease and attempt. The
+   scheduler owns the journal.
 4. The scheduler checks the binding, removes the container and verifies
    absence on the same engine. It then asks a trusted verifier to check the
    workspace evidence, applies the reducer and persists the disposition.
+   Late results from an earlier lease have no effect. Failed exits or
+   invalid stdout park the attempt without invoking evidence verification.
 5. On cancellation or restart, the scheduler can reconcile an attached
    lease and park the run. An unattached reservation can be reconciled
    after observing and removing the matching stopped container by name
@@ -69,10 +74,13 @@ independent BEAM process while a container descendant remains active. A new
 boot is unable to reserve a writer until the old container is drained.
 A third fixture covers a stopped container whose create acknowledgement
 was lost and the absence of a matching observation before recovery.
-The Docker tests run separately from the default coverage gate.
+The fixture also rejects stale results, oversized stdout and a success
+proposal from a failed process. The Docker tests run separately from the
+default coverage gate.
 The fixture uses BusyBox commands and synthetic artifacts. Authenticated
 provider execution and external tracker effects require their own gates.
 
 [Docker Engine API v1.47](https://docs.docker.com/reference/api/engine/version/v1.47/) ·
 [Docker container removal](https://docs.docker.com/reference/cli/docker/container/rm/) ·
+[Docker local log rotation](https://docs.docker.com/engine/logging/drivers/local/) ·
 [Durable admission design](adr-0003-internal-workflow.md)

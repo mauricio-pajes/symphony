@@ -52,16 +52,18 @@ defmodule SymphonyElixir.InternalDispatch do
   after the container can no longer write. The returned next phase is usable
   only after the journal has recorded the disposition.
   """
-  @spec settle(Worker.t(), InternalAdmission.t(), InternalWorkflow.t(), prepared(), term(), verifier()) ::
+  @spec settle(Worker.t(), InternalAdmission.t(), InternalWorkflow.t(), prepared(), Worker.result(), verifier()) ::
           {:ok, InternalWorkflow.t(), InternalWorkflow.directive()} | {:error, term()}
-  def settle(worker, journal, run, prepared, outcome, verify) do
-    %{attempt: attempt, lease: %{attempt_id: lease_id, identity: identity}} = prepared
+  def settle(worker, journal, run, prepared, result, verify) do
+    %{attempt: attempt, lease: lease} = prepared
+    {lease_id, identity} = Worker.binding(lease)
     scope = {run.project_id, run.issue_id}
 
     with true <- run.active_attempt == attempt.id and attempt.id == lease_id,
          {:ok, ^identity} <- attached_identity(journal, scope, attempt.id),
+         {:ok, candidate} <- Worker.outcome(lease, result),
          {:ok, proof} <- Worker.drain(worker, attempt.id, identity),
-         {:ok, next, directive} <- InternalWorkflow.record(run, attempt.id, outcome, verify.()),
+         {:ok, next, directive} <- InternalWorkflow.record(run, attempt.id, candidate, verification(candidate, verify)),
          :ok <- InternalAdmission.finish(journal, scope, attempt.id, proof, disposition(directive)) do
       {:ok, next, directive}
     else
@@ -114,6 +116,9 @@ defmodule SymphonyElixir.InternalDispatch do
       _mismatch -> {:error, :stale_lease}
     end
   end
+
+  defp verification(%{status: status}, verify) when status in [:succeeded, :changes_requested], do: verify.()
+  defp verification(_candidate, _verify), do: nil
 
   defp disposition({:park, _reason}), do: :parked
   defp disposition(_next), do: :ready
