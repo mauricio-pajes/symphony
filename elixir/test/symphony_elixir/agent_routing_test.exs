@@ -294,6 +294,32 @@ defmodule SymphonyElixir.AgentRoutingTest do
                secret_names: ["SYMPHONY_TEST_SECRET"]
              )
 
+    plan = %{summary: "Trim surrounding blanks."}
+    review = %{verdict: "approved", summary: "The behavior matches the criteria."}
+
+    assert {:ok, plan_json} =
+             HeadlessAgent.isolated(
+               :gemini_plan,
+               command.(%{event: "result", result: %{status: "SUCCESS", structured_output: plan}}),
+               workspace,
+               "Plan",
+               1_000
+             )
+
+    assert Jason.decode!(plan_json) == %{"summary" => plan.summary}
+
+    assert {:ok, review_json} =
+             HeadlessAgent.isolated(
+               :claude_review,
+               command.(%{type: "result", is_error: false, structured_output: review}),
+               workspace,
+               "Review",
+               1_000
+             )
+
+    assert Jason.decode!(review_json) == %{"verdict" => review.verdict, "summary" => review.summary}
+    refute File.read!(Path.join(workspace, "captured")) in ["Plan", "Review"]
+
     assert {:error, :invalid_headless_workspace} =
              HeadlessAgent.run(:claude, ["/bin/true"], root, "Off-limits", [])
 

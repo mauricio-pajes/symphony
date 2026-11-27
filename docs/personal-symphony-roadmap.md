@@ -74,6 +74,13 @@ An independent Linear Cloud read confirmed Human Review, the matching diff,
 and test evidence. Jira remained simulated. This milestone validates the
 daemon-to-provider handoff and one review projection for a bounded fixture.
 
+The [authenticated multi-agent pilot](adr-0009-personal-multi-agent-pilot.md)
+then verified a Gemini 4 Neon Low plan, a Codex implementation and independent
+Claude Code approval for that same fixture in sequence. The daemon verified
+the diff and all four checks. A separate Linear Cloud read confirmed the
+published plan digest, review bound to the diff digest, and Human Review.
+A local test verified that a request for changes parks the run instead.
+
 ## Comparison with a Codex-only workflow
 
 Use two comparisons. First run the same proposed workflow contract and

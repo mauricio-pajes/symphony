@@ -5,6 +5,14 @@ defmodule SymphonyElixir.HeadlessAgent do
 
   alias SymphonyElixir.{Config, PathSafety}
 
+  @spec isolated(atom(), [String.t()], Path.t(), String.t(), pos_integer()) :: {:ok, String.t()} | {:error, term()}
+  def isolated(provider, command, workspace, prompt, timeout_ms) do
+    kept = ["CODEX_HOME", "HOME", "LANG", "LC_ALL", "LOGNAME", "PATH", "TMPDIR", "USER"]
+    removed = Enum.reject(Map.keys(System.get_env()), &(&1 in kept))
+
+    run(provider, command, workspace, prompt, scratch: true, secret_names: removed, timeout_ms: timeout_ms)
+  end
+
   @spec run(atom(), [String.t()], Path.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def run(provider, [command | args], workspace, prompt, opts) do
     with {:ok, workspace} <- workspace_path(workspace),
@@ -43,7 +51,7 @@ defmodule SymphonyElixir.HeadlessAgent do
         :binary,
         :exit_status,
         args: Enum.map(["-c", ~s(exec "$@" < "$0" 2>/dev/null), input, executable | args], &String.to_charlist/1),
-        cd: String.to_charlist(if(provider in [:classifier, :codex_proposal], do: scratch, else: workspace)),
+        cd: String.to_charlist(if(opts[:scratch] || provider == :classifier, do: scratch, else: workspace)),
         env: Enum.map(opts[:secret_names] || [], &{String.to_charlist(&1), false}),
         line: 8_388_608
       ])
@@ -91,7 +99,7 @@ defmodule SymphonyElixir.HeadlessAgent do
     File.rm_rf(scratch)
   end
 
-  defp encode_input(:gemini, prompt) do
+  defp encode_input(provider, prompt) when provider in [:gemini, :gemini_plan] do
     Jason.encode!(%{event: "user", message: %{content: prompt}}) <> "\n"
   end
 
@@ -129,8 +137,14 @@ defmodule SymphonyElixir.HeadlessAgent do
   defp parse_result(:claude, {:ok, %{"type" => "result", "is_error" => false, "result" => result}}, _previous)
        when is_binary(result), do: {:ok, result}
 
+  defp parse_result(:claude_review, {:ok, %{"type" => "result", "is_error" => false, "structured_output" => result}}, _previous)
+       when is_map(result), do: {:ok, Jason.encode!(result)}
+
   defp parse_result(:gemini, {:ok, %{"event" => "result", "result" => %{"status" => "SUCCESS", "response" => result}}}, _previous)
        when is_binary(result), do: {:ok, result}
+
+  defp parse_result(:gemini_plan, {:ok, %{"event" => "result", "result" => %{"status" => "SUCCESS", "structured_output" => result}}}, _previous)
+       when is_map(result), do: {:ok, Jason.encode!(result)}
 
   defp parse_result(provider, {:ok, %{"type" => "item.completed", "item" => %{"type" => "agent_message", "text" => result}}}, _previous)
        when provider in [:classifier, :codex_proposal] and is_binary(result), do: {:ok, result}

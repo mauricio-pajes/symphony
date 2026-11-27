@@ -32,6 +32,7 @@ agent:
   max_turns: 20
   # Configure internal_pilot in a separate workflow for a single synthetic issue.
   # Set internal_pilot.implementation to codex to enable the authenticated PILOT-2 fixture.
+  # Use multi_agent with the PILOT-3 fixture for Gemini, Codex and Claude Code.
   # See README.md#synthetic-linear-to-human-review-pilot.
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server

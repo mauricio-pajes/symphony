@@ -13,6 +13,7 @@ defmodule SymphonyElixir.InternalPilot do
   alias SymphonyElixir.AgentRouter.Request
   alias SymphonyElixir.{InternalAdmission, InternalDispatch, InternalWorkflow}
   alias SymphonyElixir.InternalContainerWorker, as: Worker
+  alias SymphonyElixir.InternalPilotProviders, as: Providers
   alias SymphonyElixir.InternalPilotRepository, as: Repository
   alias SymphonyElixir.Jira.Client, as: Jira
   alias SymphonyElixir.Linear.InternalPilot, as: Linear
@@ -39,7 +40,9 @@ defmodule SymphonyElixir.InternalPilot do
     :workspace,
     :image,
     :mode,
+    :plan,
     :proposal,
+    :review,
     :item,
     :source,
     :run,
@@ -55,7 +58,7 @@ defmodule SymphonyElixir.InternalPilot do
   def validate(%{agent: %{internal_pilot: nil}}), do: :ok
 
   def validate(%{agent: %{internal_pilot: pilot}, tracker: tracker, workspace: workspace, worker: worker}) do
-    with true <- Map.get(pilot, "implementation", "fixture") in ["fixture", "codex"],
+    with true <- Map.get(pilot, "implementation", "fixture") in ["fixture", "codex", "multi_agent"],
          settings = Map.delete(pilot, "implementation"),
          true <- map_size(settings) == 5,
          %{
@@ -96,7 +99,7 @@ defmodule SymphonyElixir.InternalPilot do
         worker: worker,
         workspace: Path.join(root, "pilot@" <> scope.issue_id),
         image: settings["image"],
-        mode: if(settings["implementation"] == "codex", do: :codex, else: :fixture)
+        mode: pilot_mode(settings["implementation"])
       }
 
       {:ok, recover_at_start(pilot)}
@@ -119,10 +122,10 @@ defmodule SymphonyElixir.InternalPilot do
     pilot = %{pilot | task: nil}
 
     case result do
-      {:proposal, {:ok, proposal}} when pilot.mode == :codex and is_nil(pilot.prepared) ->
-        accept_proposal(pilot, proposal, config)
+      {:provider, phase, {:ok, response}} when phase == pilot.run.phase and is_nil(pilot.prepared) ->
+        accept_provider_response(pilot, phase, response, config)
 
-      {:proposal, {:error, reason}} when pilot.mode == :codex and is_atom(reason) ->
+      {:provider, phase, {:error, reason}} when phase == pilot.run.phase and is_atom(reason) ->
         stop(pilot, reason)
 
       {:ok, observed} ->
@@ -135,10 +138,17 @@ defmodule SymphonyElixir.InternalPilot do
 
   def worker_result(pilot, _ref, _result, _config), do: pilot
 
-  defp accept_proposal(pilot, proposal, config) do
+  defp accept_provider_response(pilot, phase, response, config) do
     if pinned(config) == pilot.config do
-      log(pilot, "received bounded Codex proposal")
-      %{pilot | proposal: proposal}
+      {key, message} =
+        case phase do
+          :planning -> {:plan, "received Gemini plan"}
+          :implementation -> {:proposal, "received bounded Codex proposal"}
+          :review -> {:review, "received Claude Code approval"}
+        end
+
+      log(pilot, message)
+      Map.replace!(pilot, key, response)
     else
       stop(pilot, :pilot_configuration_changed)
     end
@@ -217,7 +227,9 @@ defmodule SymphonyElixir.InternalPilot do
 
   def rows(_pilot), do: {%{}, %{}}
 
-  defp running_phase(%{prepared: nil}), do: {:codex, "Codex is preparing the implementation"}
+  defp running_phase(%{prepared: nil, run: %{phase: :planning}}), do: {:gemini, "Gemini is planning"}
+  defp running_phase(%{prepared: nil, run: %{phase: :implementation}}), do: {:codex, "Codex is preparing the implementation"}
+  defp running_phase(%{prepared: nil, run: %{phase: :review}}), do: {:claude, "Claude Code is reviewing the diff"}
 
   defp running_phase(%{prepared: prepared}) do
     {prepared.decision.target.provider, "Internal phase: #{prepared.attempt.phase}"}
@@ -280,7 +292,7 @@ defmodule SymphonyElixir.InternalPilot do
              project_id: elem(scope, 0),
              requirements_revision: digest(requirements),
              policy_revision: policy_revision(pilot.mode),
-             independent_review: pilot.mode == :fixture
+             independent_review: pilot.mode != :codex
            }) do
       log(pilot, "read simulated Jira requirements key=#{jira_key(pilot.mode)}")
       launch_phase(%{pilot | run: run, source: source(item)}, supervisor)
@@ -289,14 +301,29 @@ defmodule SymphonyElixir.InternalPilot do
     end
   end
 
-  defp seed_workspace(%{mode: :codex, workspace: workspace}), do: Repository.seed(workspace)
-  defp seed_workspace(_pilot), do: :ok
+  defp seed_workspace(%{mode: :fixture}), do: :ok
+  defp seed_workspace(%{workspace: workspace}), do: Repository.seed(workspace)
 
-  defp launch_phase(%{mode: :codex, run: %{phase: :implementation}, proposal: nil} = pilot, supervisor) do
+  defp launch_phase(%{mode: :multi_agent, run: %{phase: :planning}, plan: nil, workspace: workspace} = pilot, supervisor) do
+    launch_provider(pilot, supervisor, :gemini, fn -> Providers.plan(workspace) end)
+  end
+
+  defp launch_phase(%{mode: mode, run: %{phase: :implementation}, proposal: nil, workspace: workspace} = pilot, supervisor)
+       when mode in [:codex, :multi_agent] do
+    plan_summary = if pilot.plan, do: pilot.plan.summary
+    launch_provider(pilot, supervisor, :codex, fn -> Repository.propose(workspace, plan_summary) end)
+  end
+
+  defp launch_phase(%{mode: :multi_agent, run: %{phase: :review, artifact: %{revision: revision}}, review: nil} = pilot, supervisor) do
     workspace = pilot.workspace
-    task = Task.Supervisor.async_nolink(supervisor, fn -> {:proposal, Repository.propose(workspace)} end)
-    log(pilot, "started authenticated Codex proposal")
-    %{pilot | prepared: nil, task: task, started_at: DateTime.utc_now()}
+
+    case Repository.artifact(workspace) do
+      {:ok, %{revision: ^revision} = artifact} ->
+        launch_provider(pilot, supervisor, :claude, fn -> Providers.review(workspace, artifact) end)
+
+      _changed ->
+        stop(pilot, :pilot_review_artifact_changed)
+    end
   end
 
   defp launch_phase(pilot, supervisor) do
@@ -313,6 +340,13 @@ defmodule SymphonyElixir.InternalPilot do
       _deferred_or_failed ->
         stop(pilot, :pilot_dispatch_blocked)
     end
+  end
+
+  defp launch_provider(pilot, supervisor, provider, run) do
+    phase = pilot.run.phase
+    task = Task.Supervisor.async_nolink(supervisor, fn -> {:provider, phase, run.()} end)
+    log(pilot, "started authenticated provider=#{provider} phase=#{phase}")
+    %{pilot | prepared: nil, task: task, started_at: DateTime.utc_now()}
   end
 
   defp settle_observed(pilot, observed, config) do
@@ -377,7 +411,9 @@ defmodule SymphonyElixir.InternalPilot do
 
   defp verify_review_observation(pilot, %{status: status}) when status in [:review_pending, :human_review] do
     with {:ok, artifact} <- Repository.artifact(pilot.workspace),
-         true <- Repository.review_observed?(pilot.item.issue.description, artifact.revision) do
+         body when is_binary(body) <- pilot.item.issue.description,
+         true <- Repository.review_observed?(body, artifact),
+         true <- pilot.mode != :multi_agent or Providers.observed?(body, artifact.revision) do
       :ok
     else
       _unconfirmed -> {:error, :pilot_review_evidence_unconfirmed}
@@ -391,19 +427,26 @@ defmodule SymphonyElixir.InternalPilot do
   defp review_description(%{run: %{artifact: %{revision: revision}}} = pilot, %{issue: %{description: description}})
        when is_binary(description) do
     case Repository.artifact(pilot.workspace) do
-      {:ok, %{revision: ^revision} = artifact} -> {:ok, Repository.review_description(description, artifact)}
-      _unverified -> {:error, :codex_pilot_unverified_artifact}
+      {:ok, %{revision: ^revision} = artifact} ->
+        provider_evidence = if pilot.mode == :multi_agent, do: Providers.evidence(pilot.plan, pilot.review), else: ""
+        {:ok, Repository.review_description(description, artifact, provider_evidence)}
+
+      _unverified ->
+        {:error, :codex_pilot_unverified_artifact}
     end
   end
 
   defp review_description(_pilot, _item), do: {:error, :codex_pilot_unverified_artifact}
 
+  defp verify(%{mode: :multi_agent, run: %{phase: :planning, requirements_revision: requirements}, plan: %{revision: plan}}),
+    do: {:planning, requirements, "gemini-plan:" <> plan, [criterion(:multi_agent)]}
+
   defp verify(%{mode: mode, run: %{phase: :planning, requirements_revision: revision}}),
     do: {:planning, revision, "jira:" <> jira_key(mode), [criterion(mode)]}
 
-  defp verify(%{mode: :codex, run: run, workspace: workspace}) do
+  defp verify(%{mode: mode, workspace: workspace} = pilot) when mode in [:codex, :multi_agent] do
     case Repository.artifact(workspace) do
-      {:ok, %{revision: revision, ref: ref}} -> verify_repository(run, revision, ref)
+      {:ok, artifact} -> verify_repository(pilot, artifact)
       {:error, _reason} -> nil
     end
   end
@@ -420,11 +463,16 @@ defmodule SymphonyElixir.InternalPilot do
     end
   end
 
-  defp verify_repository(%{phase: :implementation, requirements_revision: requirements}, revision, ref),
+  defp verify_repository(%{run: %{phase: :implementation, requirements_revision: requirements}}, %{revision: revision, ref: ref}),
     do: {:implementation, requirements, %{ref: ref, revision: revision}}
 
-  defp verify_repository(%{phase: :validation, requirements_revision: requirements}, revision, _ref),
-    do: {:validation, requirements, revision, %{criterion(:codex) => "offline-regression-tests"}}
+  defp verify_repository(%{mode: mode, run: %{phase: :validation, requirements_revision: requirements}}, %{revision: revision}),
+    do: {:validation, requirements, revision, %{criterion(mode) => "offline-regression-tests"}}
+
+  defp verify_repository(%{run: %{phase: :review, requirements_revision: requirements}, review: %{revision: revision}}, %{revision: revision}),
+    do: {:review, requirements, revision, {:approved, "claude-review:" <> revision}}
+
+  defp verify_repository(_pilot, _artifact), do: nil
 
   defp verify_artifact(%{phase: :implementation, requirements_revision: requirements}, revision),
     do: {:implementation, requirements, %{ref: "result.txt", revision: revision}}
@@ -446,7 +494,7 @@ defmodule SymphonyElixir.InternalPilot do
       provider: provider,
       account_key: alias_name,
       scopes: [Map.put(scope, :access, access)],
-      options: [%{model: if(mode == :codex and run.phase == :implementation, do: "codex", else: "fixture"), effort: nil, capabilities: [capability]}]
+      options: [%{model: profile_model(mode, run.phase), effort: nil, capabilities: [capability]}]
     }
 
     request = %Request{
@@ -470,6 +518,16 @@ defmodule SymphonyElixir.InternalPilot do
     %{request: request, profiles: [profile], availability: availability, command_for: fn _target -> {:ok, command} end}
   end
 
+  defp profile_model(:multi_agent, :planning), do: Providers.gemini_model()
+  defp profile_model(:multi_agent, :review), do: "claude"
+  defp profile_model(mode, :implementation) when mode in [:codex, :multi_agent], do: "codex"
+  defp profile_model(_mode, _phase), do: "fixture"
+
+  defp phase_command(%{mode: :multi_agent, run: %{phase: phase}, image: image, proposal: proposal}) do
+    {provider, capability, _script} = Map.fetch!(@phase_specs, phase)
+    {provider, capability, Repository.command(phase, image, proposal)}
+  end
+
   defp phase_command(%{mode: :codex, run: %{phase: phase}, image: image, proposal: proposal}) do
     {_provider, capability, _script} = Map.fetch!(@phase_specs, phase)
     {:codex, capability, Repository.command(phase, image, proposal)}
@@ -485,15 +543,20 @@ defmodule SymphonyElixir.InternalPilot do
     do: String.trim(body) in [url, "<#{url}>", "[#{url}](#{url})", "[#{url}](<#{url}>)"]
 
   defp jira_description?(_body, _url), do: false
+  defp pilot_mode("codex"), do: :codex
+  defp pilot_mode("multi_agent"), do: :multi_agent
+  defp pilot_mode(_default), do: :fixture
   defp jira_url(mode), do: @jira_origin <> "/browse/" <> jira_key(mode)
   defp jira_key(:fixture), do: "PILOT-1"
   defp jira_key(:codex), do: "PILOT-2"
+  defp jira_key(:multi_agent), do: "PILOT-3"
   defp criterion(:fixture), do: @criteria
-  defp criterion(:codex), do: "version-label-normalization"
+  defp criterion(_repository_mode), do: "version-label-normalization"
   defp policy_revision(:fixture), do: "synthetic-linear-v1"
   defp policy_revision(:codex), do: "personal-codex-v1"
+  defp policy_revision(:multi_agent), do: "personal-multi-agent-v1"
   defp jira_requirements(:fixture), do: @requirements
-  defp jira_requirements(:codex), do: Repository.requirements()
+  defp jira_requirements(_repository_mode), do: Repository.requirements()
 
   defp fetch_jira(link, mode) do
     key = jira_key(mode)

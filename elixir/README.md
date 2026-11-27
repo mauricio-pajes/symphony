@@ -267,6 +267,25 @@ adds the inline diff, its SHA-256 and test results to the ticket in the same
 Linear update that moves it to Human Review. Use the [Codex pilot ADR](../docs/adr-0008-personal-codex-pilot.md)
 for the execution boundary and restart behavior.
 
+#### Authenticated multi-agent pilot
+
+Set `implementation: multi_agent` under `agent.internal_pilot` and put
+`https://jira.fixture.test/browse/PILOT-3` on a fresh scoped Linear test
+issue. Use the same private Docker and workspace configuration. This mode
+needs authenticated `agy`, `codex` and `claude` CLIs on the daemon's `PATH`.
+
+Gemini 4 Neon Low produces a structured plan for the simulated requirements.
+Codex receives the plan with the requirements and test fixture and proposes
+the change. After offline validation, Claude Code reviews a snapshot of the
+exact diff. The daemon only projects Human Review after approval and a
+post-review check of that revision. The one Linear update includes the
+plan, review, diff and four test results. Changes requested by Claude park
+the pilot in Todo for inspection.
+
+The local integration fixture verifies the handoffs and both review verdicts
+using CLI stubs. See the [multi-agent pilot ADR](../docs/adr-0009-personal-multi-agent-pilot.md)
+for the provider boundary and the verified live run.
+
 ### Isolated internal phase fixture
 
 The opt-in test routes a synthetic item through planning, implementation,

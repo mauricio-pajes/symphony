@@ -24,6 +24,9 @@ TEAM = "44444444-4444-4444-8444-444444444444"
 PROJECT = "symphony-synthetic"
 JIRA = "https://jira.fixture.test/browse/PILOT-1"
 CODEX_JIRA = "https://jira.fixture.test/browse/PILOT-2"
+MULTI_JIRA = "https://jira.fixture.test/browse/PILOT-3"
+PLAN = "Trim surrounding horizontal whitespace and preserve ASCII normalization."
+REVIEW_SUMMARY = "The revision matches all three acceptance criteria."
 VERSION_NORMALIZER = (
     "y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/\n"
     "s/^[[:blank:]]*//\n"
@@ -40,8 +43,10 @@ class LinearFixture:
         self.name = "Todo"
         self.state_id = TODO
         self.mode = mode
-        self.codex = mode in ("codex", "codex-invalid")
-        self.description = CODEX_JIRA if self.codex else JIRA
+        self.multi = mode in ("multi", "multi-rejected")
+        self.repository = self.multi or mode in ("codex", "codex-invalid")
+        self.jira = MULTI_JIRA if self.multi else CODEX_JIRA if self.repository else JIRA
+        self.description = self.jira
         if mode == "normal":
             self.description = f"[{JIRA}](<{JIRA}>)"
         self.unexpected = []
@@ -77,9 +82,9 @@ class LinearFixture:
                 }}
 
             expected = {"id": ISSUE, "stateId": REVIEW}
-            if self.codex:
+            if self.repository:
                 description = variables.get("description", "")
-                if (description.startswith(CODEX_JIRA) and "### Symphony pilot evidence" in description
+                if (description.startswith(self.jira) and "### Symphony pilot evidence" in description
                         and "Offline checks passed (4/4)" in description):
                     expected["description"] = description
             if "mutation SymphonyPilotHumanReview" in query and variables == expected:
@@ -131,7 +136,10 @@ def write_workflow(root, server, args):
     journal = root / "state"
     workspace.mkdir()
     journal.mkdir(mode=0o700)
-    implementation = "    implementation: codex\n" if server.fixture.codex else ""
+    implementation = ""
+    if server.fixture.repository:
+        mode = "multi_agent" if server.fixture.multi else "codex"
+        implementation = f"    implementation: {mode}\n"
     workflow = root / "WORKFLOW.md"
     workflow.write_text(f"""---
 tracker:
@@ -231,14 +239,15 @@ def run_case(args, mode):
 
 def verify_case(args, mode, root, server, log):
     workflow = write_workflow(root, server, args)
-    if server.fixture.codex:
-        source = VERSION_NORMALIZER if mode == "codex" else VERSION_NORMALIZER + "w artifact.log\n"
-        write_codex_fixture(root, source)
+    if server.fixture.repository:
+        write_provider_stubs(root, mode)
     port = daemon_port()
     reason, state, mutations, generation = {
         "normal": ("human review", "Human Review", 1, 4),
         "codex": ("human review", "Human Review", 1, 3),
         "codex-invalid": ("codex pilot invalid proposal", "Todo", 0, 1),
+        "multi": ("human review", "Human Review", 1, 4),
+        "multi-rejected": ("claude pilot changes requested", "Todo", 0, 3),
         "lost-ack-applied": ("human review", "Human Review", 1, 4),
         "lost-ack-active": ("pilot review transition unconfirmed", "Todo", 1, 4),
         "edited": (("pilot worker settlement blocked", "pilot issue changed"), "Todo", 0, 1),
@@ -252,30 +261,37 @@ def verify_case(args, mode, root, server, log):
     ledger = json.loads((root / "state" / "admission.json").read_text())
     [record] = ledger["records"]
     expected_disposition = {"Human Review": "human_review", "Todo": "review_pending"}[state]
-    if mode in ("edited", "codex-invalid"):
+    parked = mode in ("edited", "codex-invalid", "multi-rejected")
+    if parked:
         expected_disposition = "parked"
     assert record["status"] == expected_disposition and record["generation"] == generation and record["lease"] is None, record
 
     workspace = root / "workspaces" / ("pilot@" + ISSUE)
-    if generation == 4:
+    if generation == 4 and not server.fixture.repository:
         assert (workspace / "result.txt").read_text() == "fixture-response\n"
     daemon_output = daemon_logs(log)
-    expected_key = "PILOT-2" if server.fixture.codex else "PILOT-1"
+    expected_key = server.fixture.jira.rsplit("/", 1)[1]
     assert f"read simulated Jira requirements key={expected_key}" in daemon_output, daemon_output
     assert daemon_output.count("started phase=") == generation
-    if mode == "codex":
+    if mode in ("codex", "multi"):
         assert "received bounded Codex proposal" in daemon_output, daemon_output
         assert (workspace / "normalize.sed").read_text() == VERSION_NORMALIZER
         diff = subprocess.check_output(["git", "diff", "--no-ext-diff", "--no-textconv", "HEAD"], cwd=workspace)
         assert diff.decode().rstrip() in server.fixture.description
-        assert hashlib.sha256(diff).hexdigest() in server.fixture.description
+        revision = hashlib.sha256(diff).hexdigest()
+        assert f"Diff SHA-256: {revision}" in server.fixture.description
+        if mode == "multi":
+            assert f"Gemini plan: `{PLAN}`" in server.fixture.description
+            assert f"Gemini plan SHA-256: {hashlib.sha256(PLAN.encode()).hexdigest()}" in server.fixture.description
+            assert f"Claude Code review: `{REVIEW_SUMMARY}`" in server.fixture.description
+            assert f"Claude Code approved diff SHA-256: {revision}" in server.fixture.description
     elif mode == "codex-invalid":
         assert (workspace / "normalize.sed").read_text() == VERSION_NORMALIZER.splitlines(keepends=True)[0]
         assert not (workspace / "artifact.log").exists()
 
     restarted = start_daemon(args.binary, workflow, port, log)
     try:
-        after_restart = "pilot parked after restart" if mode in ("edited", "codex-invalid") else reason
+        after_restart = "pilot parked after restart" if parked else reason
         await_blocked(restarted, port, after_restart, state)
     finally:
         stop_daemon(restarted)
@@ -291,18 +307,32 @@ def verify_case(args, mode, root, server, log):
                 print(line)
 
 
-def write_codex_fixture(root, source):
-    path = root / "bin" / "codex"
-    path.parent.mkdir()
-    event = json.dumps({"type": "item.completed", "item": {
+def write_provider_stubs(root, mode):
+    binary_dir = root / "bin"
+    binary_dir.mkdir()
+    source = VERSION_NORMALIZER + "w artifact.log\n" if mode == "codex-invalid" else VERSION_NORMALIZER
+    codex_result = {"type": "item.completed", "item": {
         "type": "agent_message", "text": json.dumps({"source": source}),
-    }})
+    }}
+    multi = mode.startswith("multi")
+    write_provider_stub(binary_dir / "codex", PLAN if multi else "Acceptance criteria:", codex_result)
+    if multi:
+        write_provider_stub(binary_dir / "agy", "Plan a change", {"event": "result", "result": {
+            "status": "SUCCESS", "structured_output": {"summary": PLAN},
+        }})
+        verdict = "changes_requested" if mode == "multi-rejected" else "approved"
+        write_provider_stub(binary_dir / "claude", "diff --git a/normalize.sed b/normalize.sed", {
+            "type": "result", "is_error": False, "structured_output": {"verdict": verdict, "summary": REVIEW_SUMMARY},
+        })
+
+
+def write_provider_stub(path, expected_prompt, result):
     path.write_text(f"""#!/bin/sh
 set -eu
 test -z "${{LINEAR_API_KEY-}}"
 test ! -e normalize.sed
-grep -q 'Acceptance criteria:'
-printf '%s\\n' {shlex.quote(event)}
+grep -Fq {shlex.quote(expected_prompt)}
+printf '%s\\n' {shlex.quote(json.dumps(result))}
 """)
     path.chmod(0o700)
 
@@ -342,7 +372,7 @@ def main():
     parser.add_argument("--image", required=True)
     args = parser.parse_args()
     args.binary = args.binary.resolve()
-    for mode in ("normal", "codex", "codex-invalid", "lost-ack-applied", "lost-ack-active", "edited", "crash"):
+    for mode in ("normal", "codex", "codex-invalid", "multi", "multi-rejected", "lost-ack-applied", "lost-ack-active", "edited", "crash"):
         run_case(args, mode)
 
 
